@@ -98,7 +98,11 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         return { content, details, isError: result.isError };
       },
     }));
-    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off' });
+    const settingsManager = SettingsManager.inMemory({
+      // Leave room to summarize the transcript and for provider request overhead.
+      compaction: { enabled: true, reserveTokens: Math.floor(model.contextWindow * 0.4) },
+      cacheWarming: 'off',
+    });
     const resourceLoader = new DefaultResourceLoader({
       cwd: directory, agentDir, settingsManager, noExtensions: true, noSkills: true,
       noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: [], systemPrompt: client.instructions,
@@ -125,6 +129,10 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
       });
     }
     session.subscribe(event => {
+      if (event.type === 'compaction_end') {
+        record(event.type, { reason: event.reason, tokensBefore: event.result?.tokensBefore,
+          tokensAfter: event.result?.estimatedTokensAfter, willRetry: event.willRetry, errorMessage: event.errorMessage });
+      }
       if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
         const response = event.result?.details?.structuredContent?.response;
         const markdown = response?.markdown ?? '';
