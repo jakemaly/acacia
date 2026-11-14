@@ -2,7 +2,7 @@ import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { McpClient, McpConnectionClosedError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
+import { McpClient, McpConnectionClosedError, McpError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { Agent, fetch } from 'undici';
 import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
 import { followAction } from './action-wait.mjs';
@@ -17,6 +17,11 @@ const defaultExecutionTimeouts = {
   explore_frontier: 120_000,
   navigate: 180_000,
 };
+
+function mcpDisconnected(error) {
+  return error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET' ||
+    (error instanceof McpError && error.code === -32603 && error.message.startsWith('MCP response stream failed:'));
+}
 
 function decisionFromRationale(rationale) {
   if (typeof rationale !== 'string') return;
@@ -80,9 +85,10 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         return await client.callTool(name, args, { signal: toolSignal });
       } catch (error) {
         const expired = error instanceof McpSessionExpiredError;
-        const disconnected = error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET';
+        const disconnected = mcpDisconnected(error);
         if (!expired && !disconnected) throw error;
         signal.throwIfAborted();
+        toolSignal?.throwIfAborted();
         await client.close();
         await connectMcp();
         record('mcp_reconnected', {});
@@ -120,6 +126,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         const result = monitored
           ? await followAction({ name: target, args, requestedWait, pollMs,
             call: (name, params) => callMinecraft(name, params, toolSignal, true),
+            isTransportFailure: error => mcpDisconnected(error) || error instanceof McpSessionExpiredError,
             onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
           })
           : await callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
@@ -178,10 +185,10 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
           tokensAfter: event.result?.estimatedTokensAfter, willRetry: event.willRetry, errorMessage: event.errorMessage });
       }
       if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
-        const response = event.result?.details?.structuredContent?.response;
+        const { response, handoff } = event.result?.details?.structuredContent ?? {};
         const markdown = response?.markdown ?? '';
-        const actionId = response?.data?.actionId ?? markdown.match(/^Action ID: ([a-f0-9-]+)$/m)?.[1];
-        const outcome = response?.data?.state ?? (markdown.startsWith('**Accepted:**') ? 'accepted'
+        const actionId = handoff?.actionId ?? response?.data?.actionId ?? markdown.match(/^Action ID: ([a-f0-9-]+)$/m)?.[1];
+        const outcome = (handoff && 'pending') ?? response?.data?.state ?? (markdown.startsWith('**Accepted:**') ? 'accepted'
           : markdown.startsWith('## Action in progress') ? 'pending'
           : actionId ? 'settled' : undefined);
         const decision = event.type === 'tool_execution_start' ? decisionFromRationale(event.args?.rationale) : undefined;

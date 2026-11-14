@@ -315,10 +315,10 @@ test('Pi follows a long route with one model call and releases the next action',
   attempt('long-route', async ({ app, waitFor, terminal, consoleCommand }) => {
     consoleCommand('gamerule doMobSpawning false');
     consoleCommand('gamerule fallDamage false');
-    consoleCommand('execute as Acacia at @s run forceload add ~-16 ~-16 ~112 ~16');
+    consoleCommand('forceload add -64 -16 80 16');
     await delay(2000);
-    consoleCommand('execute as Acacia at @s run fill ~-3 149 ~-3 ~105 149 ~3 minecraft:stone');
-    consoleCommand('execute as Acacia at @s run tp @s ~ 150 ~');
+    consoleCommand('fill -44 149 -3 65 149 3 minecraft:stone');
+    consoleCommand('tp Acacia -40.5 150 0.5');
     const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
       event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action'));
     assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);

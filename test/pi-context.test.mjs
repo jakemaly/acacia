@@ -70,13 +70,13 @@ test('compact status keeps actionable facts and foreground IDs', () => {
   assert.doesNotMatch(block.text, /remote_example/);
 });
 
-for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admission']) {
+for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admission', 'dropped SSE admission']) {
   const batch = reason === 'productive wait';
-  const dropped = reason === 'dropped admission';
+  const dropped = reason.includes('dropped');
   const monitored = batch || dropped;
   const action = batch ? 'collect_block' : 'navigate';
   test(batch ? 'Pi waits through a productive collection and hands back the final receipt'
-    : dropped ? 'Pi replays an identical submission after losing the admission response'
+    : dropped ? `Pi replays an identical submission after ${reason}`
     : `Pi continues a pending Minecraft action after ${reason} compaction`, { timeout: 10_000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'mine-pi-'));
     const socket = join(directory, 'mcp.sock');
@@ -110,6 +110,9 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
             if (submitted) assert.deepEqual(args, submitted);
             else {
               submitted = args;
+              if (reason === 'dropped SSE admission') return response.writeHead(200, {
+                'content-type': 'text/event-stream',
+              }).end();
               if (dropped) return response.destroy();
             }
           } else assert.equal(args.action_id, '1234-abcd');
