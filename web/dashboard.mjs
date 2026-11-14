@@ -59,6 +59,20 @@ function setAgent(mode, label) {
   $('activity').textContent = label;
 }
 
+function renderDecision(decision) {
+  const panel = $('current-decision');
+  panel.hidden = !decision;
+  if (!decision) return;
+  for (const [id, value] of [
+    ['decision-objective', decision.objective],
+    ['decision-observation', decision.observation],
+    ['decision-change-course', decision.changeCourse],
+  ]) {
+    const field = $(id);
+    if (field.textContent !== value) field.textContent = value;
+  }
+}
+
 function renderMeter(container, value, sprite, empty) {
   const points = isNumber(value) ? Math.max(0, Math.min(20, Number(value))) : null;
   const signature = points === null ? 'unknown' : String(points);
@@ -107,7 +121,16 @@ function renderInventory(items) {
 
 function renderStatus() {
   const active = ['starting', 'running', 'saving', 'reflecting'].includes(run.state);
-  $('start').disabled = !run.state || active || controlPending;
+  const mode = $('run-mode');
+  if (run.state && !mode.dataset.initialized) {
+    mode.value = run.defaultMode;
+    mode.dataset.initialized = 'true';
+  }
+  const hardcore = active ? run.hardcore : mode.value === 'hardcore';
+  $('difficulty').textContent = hardcore ? 'Hard (Hardcore)' : 'Normal';
+  mode.hidden = active;
+  mode.disabled = !run.state || active || controlPending;
+  $('start').disabled = mode.disabled || (hardcore && run.hardcore && run.state === 'won');
   $('checkpoint-control').hidden = active;
   $('collect-checkpoints').disabled = $('start').disabled;
   const checkpoints = run.checkpoints;
@@ -146,6 +169,7 @@ function renderStatus() {
     !activity.some(other => other.type === 'tool_execution_end' && other.id === event.id));
   setAgent(run.state === 'running' ? pending ? pending.tool.endsWith('__navigate') ? 'walking' : 'acting' : 'thinking' : 'idle',
     pending ? title(toolLabel(pending.tool)) : activity.at(-1)?.type === 'continuation' ? 'Continuing the run' : 'Thinking');
+  renderDecision(run.decision);
   renderHealth();
 }
 
@@ -242,8 +266,12 @@ async function control(action) {
   controlPending = true;
   renderStatus();
   try {
-    const collect = action === 'start' && $('collect-checkpoints').checked;
-    const status = await api(`/api/${action}${collect ? '?collect=1' : ''}`, { method: 'POST' });
+    const query = new URLSearchParams();
+    if (action === 'start') {
+      query.set('mode', $('run-mode').value);
+      if ($('collect-checkpoints').checked) query.set('collect', '1');
+    }
+    const status = await api(`/api/${action}${query.size ? `?${query}` : ''}`, { method: 'POST' });
     if (action === 'start') $('collect-checkpoints').checked = false;
     if (status.id !== run.id) {
       messages.clear();
@@ -332,6 +360,7 @@ $('theme-toggle').onclick = () => {
 };
 $('start').onclick = () => control('start');
 $('stop').onclick = () => control('stop');
+$('run-mode').onchange = renderStatus;
 $('conversation-tab').onclick = () => showTab('conversation');
 $('runs-tab').onclick = () => showTab('runs');
 $('refresh-runs').onclick = showRuns;

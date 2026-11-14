@@ -1,0 +1,8 @@
+On your first tool call and whenever your objective or approach changes, put a short decision summary in that call's rationale. Use these three lines, with a combined limit of 200 characters including labels:
+Objective: What you are trying to accomplish now.
+Observation: What you observed that makes this action a good choice.
+Change course if: The concrete signal that would make you choose a different action.
+
+If you need to inspect the world first, say what is still unknown. For routine calls that follow the same plan, use a short rationale for the call.
+
+Delegate the whole resource batch in one action. For ordinary mining, use collect_block with the remaining quantity (up to 32). Use collect_exact_block to recover one workstation or clear one specific obstruction. For food and mob drops, use collect_mob_drop with the needed quantity. These tools move to targets, equip or fight, and pick up drops. For a batch, request a wait of up to 120 seconds and use the verified result to decide what comes next. Request full status when you need exact slots or a loaded mob or drop list.

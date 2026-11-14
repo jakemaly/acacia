@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,16 @@ const host = '127.0.0.1';
 const send = (port, path) => fetch(`http://${host}:${port}${path}`, {
   method: 'POST', headers: { origin: `http://${host}:${port}` },
 });
+const firstDecision = {
+  objective: 'Find a sheltered route to the cave.',
+  observation: 'Solid ground leads to the west entrance.',
+  changeCourse: 'Hostile mobs block the entrance.',
+};
+const secondDecision = {
+  objective: 'Scout the east entrance.',
+  observation: 'Two skeletons are guarding the west entrance.',
+  changeCourse: 'The east route has exposed ledges.',
+};
 
 export async function scriptedInference(agentDir, scenario) {
   const { model, runtime } = await openai(agentDir);
@@ -26,6 +37,67 @@ export async function scriptedInference(agentDir, scenario) {
     const stage = step;
     const earlyReply = [{ type: 'text', text: 'I defeated the dragon.' }];
     let content = earlyReply;
+    if (scenario === 'tool-interface') {
+      const work = { wait_timeout_ms: 30_000, rationale: 'Verify the fixture action.' };
+      const next = [
+        () => call('view_status', { rationale: 'Find the test location.' }),
+        () => {
+          assert.match(lastResult.content[0].text, /Health 20\/20/);
+          assert.doesNotMatch(lastResult.content[0].text, /every loaded chunk/);
+          const position = lastResult.details.structuredContent.response.data.result.situation.position;
+          const { x, y, z } = Object.fromEntries(['x', 'y', 'z'].map(axis => [axis, Math.floor(position[axis])]));
+          return call('use_container', { ...work, x: x + 1, y, z, operation: 'deposit',
+            items: [{ item_name: 'cobblestone', count: 2 }], submission_id: 'transfer-fixture' });
+        },
+        () => {
+          assert.equal(lastResult.isError, false, lastResult.content[0].text);
+          const chest = messages.findLast(message => message.role === 'assistant' &&
+            message.content.some(block => block.name === 'mcp__minecraft__use_container')).content[0].arguments;
+          return call('use_container', { ...work, x: chest.x, y: chest.y, z: chest.z,
+            operation: 'inspect', submission_id: 'inspect-fixture' });
+        },
+        () => {
+          assert.match(lastResult.content[0].text, /cobblestone.*(?:2|two)/i);
+          const chest = messages.findLast(message => message.role === 'assistant' &&
+            message.content.some(block => block.name === 'mcp__minecraft__use_container')).content[0].arguments;
+          return call('build_structure', { ...work,
+            blocks: [{ x: chest.x + 1, y: chest.y, z: chest.z, block_name: 'cobblestone' }],
+            submission_id: 'build-fixture' });
+        },
+        () => {
+          assert.equal(lastResult.isError, false, lastResult.content[0].text);
+          return call('collect_block', { ...work, block_name: 'diamond_ore', count: 2,
+            scaffold: false, submission_id: 'collect-batch-fixture' });
+        },
+        () => {
+          assert.equal(lastResult.isError, false, lastResult.content[0].text);
+          assert.match(lastResult.content[0].text, /Inventory gained: 2/);
+          const build = messages.findLast(message => message.role === 'assistant' &&
+            message.content.some(block => block.name === 'mcp__minecraft__build_structure')).content[0].arguments;
+          const [{ x, y, z }] = build.blocks;
+          return call('collect_exact_block', { ...work, x, y, z, block_name: 'cobblestone',
+            scaffold: false, submission_id: 'collect-exact-fixture' });
+        },
+        () => {
+          assert.equal(lastResult.isError, false, lastResult.content[0].text);
+          assert.match(lastResult.content[0].text, /Inventory gained: 1/);
+          return call('view_status', { detail: 'full', rationale: 'Get slot and mob details.' });
+        },
+        () => {
+          assert.match(lastResult.content[0].text, /Loaded mobs/);
+          const build = messages.findLast(message => message.role === 'assistant' &&
+            message.content.some(block => block.name === 'mcp__minecraft__build_structure')).content[0].arguments;
+          const [{ x, y, z }] = build.blocks;
+          return call('view_blocks', { cells: [{ x, y, z }], rationale: 'Confirm the construction completed.' });
+        },
+      ][stage];
+      if (next) content = [next()];
+    }
+    if (scenario === 'decision' && stage < 3) {
+      const decision = stage === 0 ? firstDecision : secondDecision;
+      content = [call('view_status', { rationale: stage === 1 ? 'Check whether anything moved.' :
+        `Objective: ${decision.objective}\nObservation: ${decision.observation}\nChange course if: ${decision.changeCourse}` })];
+    }
     if (['expired', 'logging'].includes(scenario) && stage === 1) content = [call('view_status', { rationale: 'Read the bot after reconnecting.' })];
     if (scenario === 'continue') {
       if (stage === 0) {
@@ -65,7 +137,12 @@ export async function scriptedInference(agentDir, scenario) {
     return {
       async *[Symbol.asyncIterator]() {
         if (stage === 0) await delay(3000, undefined, { signal });
+        if (stage === 0 && scenario === 'tool-interface') await delay(3500, undefined, { signal });
         if (stage > 0 && ['stop', 'win', 'disconnect'].includes(scenario)) await delay(90_000, undefined, { signal });
+        if (stage === 8 && scenario === 'tool-interface') await delay(90_000, undefined, { signal });
+        if (stage > 0 && scenario === 'decision') {
+          await delay(stage === 3 ? 90_000 : stage === 2 ? 4000 : 1500, undefined, { signal });
+        }
         if (stage > 0 && scenario === 'checkpoint') await delay(420_000, undefined, { signal });
         if (stage === 1 && ['expired', 'logging'].includes(scenario)) await delay(3000, undefined, { signal });
         yield { type: 'start', partial: message };
@@ -111,7 +188,7 @@ async function attempt(scenario, verify, options) {
   const root = await mkdtemp(join(tmpdir(), 'mine-ai-'));
   const viewerPort = await sparePort();
   const gamePort = await sparePort();
-  const { collect, pollCount = 180, ...dashboardOptions } = options ?? {};
+  const { collect, mode, pollCount = 180, ...dashboardOptions } = options ?? {};
   const app = await smokeDashboard(root, viewerPort, gamePort, scenario, dashboardOptions);
   const status = async () => (await fetch(`http://${host}:${app.port}/api/run`)).json();
   const waitFor = async condition => {
@@ -124,13 +201,33 @@ async function attempt(scenario, verify, options) {
   };
   try {
     assert.equal((await fetch(`http://${host}:${app.port}/api/start`, { method: 'POST' })).status, 404);
-    assert.equal((await send(app.port, collect ? '/api/start?collect=1' : '/api/start')).status, 202);
+    assert.equal((await send(app.port, '/api/start?mode=invalid')).status, 400);
+    const query = new URLSearchParams();
+    if (collect) query.set('collect', '1');
+    if (mode) query.set('mode', mode);
+    const start = query.size ? `/api/start?${query}` : '/api/start';
+    assert.equal((await send(app.port, start)).status, 202);
     assert.equal((await send(app.port, '/api/start')).status, 409);
     const run = await waitFor(status => status.state === 'running' || status.state === 'incomplete');
     assert.equal(run.state, 'running', run.detail);
     assert.equal(Boolean(run.collectionSession), Boolean(collect));
     const terminal = () => waitFor(status => ['won', 'incomplete', 'stopped'].includes(status.state));
     const directory = join(root, run.id);
+    if (mode) {
+      await waitFor(status => status.activity.some(event => event.type === 'assistant'));
+      const transcript = await (await fetch(`http://${host}:${app.port}/api/conversation?id=${run.id}`)).json();
+      const hardcore = mode === 'hardcore';
+      const manifest = JSON.parse(await readFile(join(directory, 'run.json'), 'utf8'));
+      assert.equal(manifest.hardcore, hardcore);
+      const base = (await readFile(new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url), 'utf8')).trimEnd();
+      const prompt = transcript.messages.find(message => message.role === 'user')?.text;
+      assert.ok(prompt.startsWith(base + '\n\n'));
+      assert.match(prompt.slice(base.length), /Objective:.*Observation:.*Change course if:/s);
+      assert.equal(manifest.promptSha256, createHash('sha256').update(prompt).digest('hex'));
+      const properties = await readFile(join(directory, 'server/server.properties'), 'utf8');
+      assert.ok(properties.split('\n').includes(`hardcore=${hardcore}`));
+      assert.ok(properties.split('\n').includes(`difficulty=${hardcore ? 'hard' : 'normal'}`));
+    }
     const consoleCommand = command => execFileSync('docker', ['exec', `mineai-${run.id}-server`,
       'sh', '-c', 'printf "%s\n" "$1" > /proc/1/fd/0', 'sh', command], { timeout: 5000 });
     await verify({ run, app, gamePort, directory, root, status, waitFor, terminal, consoleCommand });
@@ -176,13 +273,58 @@ test('a terminal provider error during continuation saves and reports the error'
     assert.equal(final.activity.filter(event => event.type === 'continuation').length, 1);
   }));
 
-test('operator stop interrupts continuation and saves the world', smokeOptions, () =>
+test('Survival selection overrides the Hardcore default and operator stop saves the world', smokeOptions, () =>
   attempt('stop', async ({ app, waitFor, terminal }) => {
     await waitFor(run => run.activity.some(event => event.type === 'continuation'));
     assert.equal((await send(app.port, '/api/stop')).status, 202);
     const final = await terminal();
     assert.equal(final.state, 'stopped');
     assert.equal(final.detail, 'Stopped by operator.');
+  }, { mode: 'survival', hardcore: true }));
+
+test('Acacia reports a current decision through Pi and routine calls preserve it', smokeOptions, () =>
+  attempt('decision', async ({ app, waitFor, terminal }) => {
+    const afterCalls = count => waitFor(run => run.activity.filter(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status').length >= count);
+    assert.deepEqual((await afterCalls(1)).decision, firstDecision);
+    assert.deepEqual((await afterCalls(2)).decision, firstDecision);
+    assert.deepEqual((await afterCalls(3)).decision, secondDecision);
+    assert.equal((await send(app.port, '/api/stop')).status, 202);
+    assert.equal((await terminal()).decision, undefined);
+  }));
+
+test('Pi can deposit, build, and use both collection modes in Minecraft', smokeOptions, () =>
+  attempt('tool-interface', async ({ app, directory, waitFor, terminal, consoleCommand }) => {
+    // A chest beside the spawn square gives the real Mine AI operation something to open.
+    const dispatcher = new Agent({ connect: { socketPath: join(directory, 'io/mcp.sock') } });
+    let position;
+    try {
+      const health = await socketFetch('http://localhost:25575/health', { dispatcher });
+      position = (await health.json()).minecraft.position;
+    } finally {
+      await dispatcher.destroy();
+    }
+    const x = Math.floor(position.x);
+    const y = Math.floor(position.y);
+    const z = Math.floor(position.z);
+    consoleCommand(`setblock ${x + 1} ${y - 1} ${z} minecraft:stone`);
+    consoleCommand(`setblock ${x + 1} ${y} ${z} minecraft:chest`);
+    consoleCommand(`setblock ${x + 2} ${y - 1} ${z} minecraft:stone`);
+    consoleCommand(`setblock ${x + 2} ${y} ${z} minecraft:air`);
+    consoleCommand(`setblock ${x} ${y - 1} ${z + 1} minecraft:stone`);
+    consoleCommand(`setblock ${x} ${y} ${z + 1} minecraft:diamond_ore`);
+    consoleCommand(`setblock ${x - 1} ${y - 1} ${z + 1} minecraft:stone`);
+    consoleCommand(`setblock ${x - 1} ${y} ${z + 1} minecraft:diamond_ore`);
+    consoleCommand('give Acacia minecraft:cobblestone 3');
+    consoleCommand('give Acacia minecraft:iron_pickaxe 1');
+    const progressed = await waitFor(status => status.state !== 'running' || status.activity.some(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_blocks'));
+    assert.equal(progressed.state, 'running', progressed.detail);
+    assert.ok(progressed.activity.some(event => event.type === 'tool_execution_end' &&
+      event.tool === 'mcp__minecraft__view_blocks' && !event.isError));
+    await waitFor(status => status.player?.inventory.some(item => item.name === 'diamond' && item.count === 2));
+    assert.equal((await send(app.port, '/api/stop')).status, 202);
+    assert.equal((await terminal()).state, 'stopped');
   }));
 
 test('the server advancement ends continuation and proves the win', smokeOptions, () =>
@@ -236,7 +378,7 @@ test('Hardcore death saves a review and launches one fresh world on the same set
     assert.equal(policy.combat.critical_health, run.profile.criticalHealth);
     assert.equal(policy.navigation.hostile_avoidance_multiplier, run.profile.hostileAvoidance);
   }, {
-    hardcore: true,
+    mode: 'hardcore',
     reflect: async ({ death }) => {
       reviewed.push(death);
       return {

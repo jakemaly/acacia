@@ -118,6 +118,7 @@ export function startRun(config) {
     try {
       appendFileSync(join(directory, 'activity.jsonl'), `${JSON.stringify(event)}\n`, { mode: 0o600 });
       if (type !== 'catalogue') run.activity = [...run.activity.slice(-79), event];
+      if (payload.decision) run.decision = payload.decision;
     } catch (failure) {
       fail(new Error(`Could not record run activity: ${failure.message}`));
     }
@@ -146,7 +147,10 @@ export function startRun(config) {
       await mkdir(directory, { mode: 0o700 });
       await Promise.all([world, data, sockets].map(path => mkdir(path, { mode: 0o700 })));
       if (Buffer.byteLength(join(sockets, 'viewer.sock')) >= 108) throw new Error('Run directory is too long for Unix sockets.');
-      const promptText = await readFile(prompt, 'utf8');
+      const [gameplay, decision] = await Promise.all([
+        readFile(prompt, 'utf8'), readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8'),
+      ]);
+      const promptText = `${gameplay.trimEnd()}\n\n${decision}`;
       const inspected = await docker(['image', 'inspect', config.collection?.runtime?.image ?? mineImage], { timeout: 10_000 });
       const [image] = JSON.parse(inspected.stdout);
       if (image.Config.Labels?.['org.opencontainers.image.revision'] !== revision) {
@@ -241,7 +245,7 @@ export function startRun(config) {
         forwards.push(await forward(config.host, config.gamePort, join(directory, 'game.sock'), config.allowed));
         signal.throwIfAborted();
         run.state = 'running';
-        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, prompt, promptText: config.collection && promptText, collectContext: Boolean(collector), actionWaitMs: hardcore ? profile.actionWaitMs : undefined, inference: config.inference });
+        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText, collectContext: Boolean(collector), actionWaitMs: hardcore ? profile.actionWaitMs : undefined, inference: config.inference });
         const watchdog = async () => {
           let failures = 0;
           while (!signal.aborted) {
