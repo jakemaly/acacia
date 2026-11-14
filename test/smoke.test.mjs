@@ -93,6 +93,23 @@ export async function scriptedInference(agentDir, scenario) {
       ][stage];
       if (next) content = [next()];
     }
+    if (scenario === 'long-route') {
+      const work = { wait_timeout_ms: 45_000, rationale: 'Cross the fixture and verify the next action can run.' };
+      if (stage === 0) content = [call('view_status', { rationale: 'Get the fixture start position.' })];
+      if (stage === 1) {
+        const { x, y, z } = lastResult.details.structuredContent.response.data.result.situation.position;
+        assert.equal(y, 150, 'the route must start on the fixture platform');
+        content = [call('navigate', { ...work, x: Math.floor(x) + 96, y, z: Math.floor(z), range: 1,
+          dig: false, scaffold: false, submission_id: 'long-route' })];
+      }
+      if (stage === 2) {
+        assert.equal(lastResult.isError, false, lastResult.content[0].text);
+        assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
+        assert.match(lastResult.content[0].text, /Final Pathfinder node is \*\*(?:0\.\d{2}|1\.00) blocks/);
+        content = [call('raw_action', { operation: 'control', state: 'jump', ticks: 5,
+          submission_id: 'after-route', ...work })];
+      }
+    }
     if (scenario === 'decision' && stage < 3) {
       const decision = stage === 0 ? firstDecision : secondDecision;
       content = [call('view_status', { rationale: stage === 1 ? 'Check whether anything moved.' :
@@ -137,9 +154,10 @@ export async function scriptedInference(agentDir, scenario) {
     return {
       async *[Symbol.asyncIterator]() {
         if (stage === 0) await delay(3000, undefined, { signal });
+        if (stage === 0 && scenario === 'long-route') await delay(7000, undefined, { signal });
         if (stage === 0 && scenario === 'tool-interface') await delay(3500, undefined, { signal });
         if (stage > 0 && ['stop', 'win', 'disconnect'].includes(scenario)) await delay(90_000, undefined, { signal });
-        if (stage === 8 && scenario === 'tool-interface') await delay(90_000, undefined, { signal });
+        if ((stage === 8 && scenario === 'tool-interface') || (stage === 3 && scenario === 'long-route')) await delay(90_000, undefined, { signal });
         if (stage > 0 && scenario === 'decision') {
           await delay(stage === 3 ? 90_000 : stage === 2 ? 4000 : 1500, undefined, { signal });
         }
@@ -292,6 +310,34 @@ test('Acacia reports a current decision through Pi and routine calls preserve it
     assert.equal((await send(app.port, '/api/stop')).status, 202);
     assert.equal((await terminal()).decision, undefined);
   }));
+
+test('Pi follows a long route with one model call and releases the next action', smokeOptions, () =>
+  attempt('long-route', async ({ app, waitFor, terminal, consoleCommand }) => {
+    consoleCommand('gamerule doMobSpawning false');
+    consoleCommand('gamerule fallDamage false');
+    consoleCommand('execute as Acacia at @s run forceload add ~-16 ~-16 ~112 ~16');
+    await delay(2000);
+    consoleCommand('execute as Acacia at @s run fill ~-3 149 ~-3 ~105 149 ~3 minecraft:stone');
+    consoleCommand('execute as Acacia at @s run tp @s ~ 150 ~');
+    const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action'));
+    assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
+    const progress = done.activity.filter(event => event.type === 'action_progress');
+    assert.ok(progress.length >= 3, 'route must span at least three internal waits');
+    assert.equal(new Set(progress.map(event => event.actionId)).size, 1);
+    assert.ok(progress[0].remainingDistance - progress.at(-1).remainingDistance >= 30, JSON.stringify(progress));
+    assert.equal(progress.at(-1).health, 20);
+    const nav = done.activity.filter(event => event.tool === 'mcp__minecraft__navigate');
+    assert.equal(nav.length, 2);
+    assert.equal(nav[1].outcome, 'settled');
+    const jump = done.activity.find(event => event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action');
+    assert.equal(jump.outcome, 'settled');
+    assert.equal(jump.isError, false);
+    const duration = Date.parse(nav[1].time) - Date.parse(nav[0].time);
+    console.log(`Long route fixture: ${progress.length} polls, ${duration} ms, health ${progress.at(-1).health}/20.`);
+    assert.equal((await send(app.port, '/api/stop')).status, 202);
+    assert.equal((await terminal()).state, 'stopped');
+  }, { hardcore: true }));
 
 test('Pi can deposit, build, and use both collection modes in Minecraft', smokeOptions, () =>
   attempt('tool-interface', async ({ app, directory, waitFor, terminal, consoleCommand }) => {

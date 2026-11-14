@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { McpClient, McpConnectionClosedError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { Agent, fetch } from 'undici';
-import { continueProductiveAction, gameArguments, gameTools, statusContent } from './game-tools.mjs';
+import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
+import { followAction } from './action-wait.mjs';
 
 export const modelId = 'gpt-6.1-terra';
 export const thinkingLevel = 'medium';
 const maxContinuationsWithoutAction = 3;
 const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state. Call the next useful Minecraft tool. If a foreground action is pending or its result has not been retrieved, recover that action first.';
+const monitoredActions = new Set(['navigate', 'collect_block', 'collect_mob_drop']);
 const defaultExecutionTimeouts = {
   collect_mob_drop: 120_000,
   explore_frontier: 120_000,
@@ -73,17 +75,19 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     if (catalogue.length !== 37 || catalogue.some(tool => tool.name.startsWith('debug_'))) {
       throw new Error('Mine AI did not expose the 37 standard tools.');
     }
-    async function callMinecraft(name, args, toolSignal) {
+    async function callMinecraft(name, args, toolSignal, replayable = false) {
       try {
         return await client.callTool(name, args, { signal: toolSignal });
       } catch (error) {
-        if (!(error instanceof McpSessionExpiredError || error instanceof McpConnectionClosedError)) throw error;
+        const expired = error instanceof McpSessionExpiredError;
+        const disconnected = error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET';
+        if (!expired && !disconnected) throw error;
         signal.throwIfAborted();
         await client.close();
         await connectMcp();
         record('mcp_reconnected', {});
         // A 404 rejects the call before dispatch. After a dropped connection its outcome is unknown.
-        if (error instanceof McpConnectionClosedError) {
+        if (disconnected && !replayable) {
           throw new Error('Minecraft MCP reconnected. Check view_status and retrieve any pending action before retrying.');
         }
         return client.callTool(name, args, { signal: toolSignal });
@@ -92,12 +96,13 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     const tools = gameTools(catalogue).map(tool => ({
       name: `mcp__minecraft__${tool.name}`,
       label: tool.name,
-      description: tool.description,
+      description: monitoredActions.has(tool.name)
+        ? `${tool.description} Set wait_timeout_ms to the time you can give this objective. Pi follows the same job while it progresses and surfaces stalls or danger.`
+        : tool.description,
       parameters: tool.inputSchema,
-      async execute(_id, args, toolSignal) {
+      async execute(id, args, toolSignal) {
         const compactStatus = tool.name === 'view_status' && args.detail !== 'full' && args.response_format !== 'json';
         const requestedWait = args.wait_timeout_ms;
-        const startedAt = Date.now();
         args = gameArguments(tool, args);
         // The async action keeps its owner and checkpoint after a wait expires.
         // Bound how long Pi goes without a chance to reconsider the action.
@@ -108,28 +113,16 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
             args.execution_timeout_ms === undefined) {
           args = { ...args, execution_timeout_ms: executionTimeout };
         }
-        // Productive batches can use the requested wait without another model decision.
-        const monitorBatch = actionWaitMs && requestedWait > actionWaitMs && args.count > 1 &&
-          ['collect_block', 'collect_mob_drop'].includes(tool.name);
-        const format = args.response_format ?? 'markdown';
-        let result = await callMinecraft(tool.target ?? tool.name, monitorBatch ? { ...args, response_format: 'json' } : args, toolSignal);
-        if (monitorBatch) {
-          let remaining = requestedWait - (Date.now() - startedAt);
-          while (!result.isError && remaining >= 1 &&
-                 continueProductiveAction(result.structuredContent?.response?.data, tool.name, args.count)) {
-            result = await callMinecraft('wait_for_action', {
-              action_id: result.structuredContent.response.data.actionId,
-              timeout_ms: Math.min(remaining, actionWaitMs), rationale: 'Check progress on the current resource batch.',
-              response_format: 'json',
-            }, toolSignal);
-            remaining = requestedWait - (Date.now() - startedAt);
-          }
-          const receipt = result.structuredContent?.response?.data;
-          if (format === 'markdown' && ['pending', 'settled'].includes(receipt?.state)) {
-            result = await callMinecraft('wait_for_action', { action_id: receipt.actionId, timeout_ms: 0,
-              rationale: 'Retrieve the verified resource batch result.', response_format: format }, toolSignal);
-          }
-        }
+        const pollMs = Math.min(actionWaitMs ?? 5_000, 5_000);
+        const target = tool.target ?? tool.name;
+        const monitored = monitoredActions.has(tool.name) && typeof args.submission_id === 'string' &&
+          Number.isInteger(requestedWait) && requestedWait > pollMs && requestedWait <= 120_000;
+        const result = monitored
+          ? await followAction({ name: target, args, requestedWait, pollMs,
+            call: (name, params) => callMinecraft(name, params, toolSignal, true),
+            onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
+          })
+          : await callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
         const response = result.structuredContent?.response;
         // Polling or retrieving an old result again does not make progress.
         const completed = response?.data?.output?.action ? response.data.actionId
@@ -142,7 +135,8 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         const compact = compactStatus && !result.isError && statusContent(result.structuredContent);
         if (compact) return { content: compact, details, isError: false };
         const content = toLlmContent(result);
-        if (result.content.length && result.structuredContent?.response?.format === 'json') {
+        if (result.content.length && result.structuredContent?.response?.format === 'json' &&
+            (!result.structuredContent.handoff || args.response_format === 'json')) {
           content.push({ type: 'text', text: JSON.stringify(result.structuredContent) });
         }
         return { content, details, isError: result.isError };

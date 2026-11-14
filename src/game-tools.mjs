@@ -62,15 +62,6 @@ export function gameArguments(tool, args) {
   return detail !== 'full' && input.response_format !== 'json' ? { ...input, response_format: 'json' } : input;
 }
 
-export function continueProductiveAction(result, tool, count) {
-  if (!['collect_block', 'collect_mob_drop'].includes(tool) || !(count > 1)) return false;
-  if (result?.state !== 'pending' || result.progress?.progress?.state !== 'running') return false;
-  const { vitalsDuringWait: vitals, duringWait } = result;
-  if (!vitals || !duringWait || vitals.healthAfter < vitals.healthBefore || duringWait.toolChanges.length ||
-      duringWait.reflexActivity.some(activity => activity.kind === 'response')) return false;
-  return duringWait.checkpointDelta.gained > 0;
-}
-
 export function statusContent(payload) {
   const snapshot = payload?.response?.data?.result;
   if (snapshot?.status !== 'succeeded' || !snapshot.situation) return;

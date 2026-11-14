@@ -167,8 +167,13 @@ function renderStatus() {
   const activity = run.activity ?? [];
   const pending = activity.findLast(event => event.type === 'tool_execution_start' &&
     !activity.some(other => other.type === 'tool_execution_end' && other.id === event.id));
+  const progress = pending && activity.findLast(event => event.type === 'action_progress' && event.id === pending.id);
+  const label = pending ? title(toolLabel(pending.tool)) : activity.at(-1)?.type === 'continuation' ? 'Continuing the run' : 'Thinking';
+  const movement = isNumber(progress?.remainingDistance) ? `${Math.round(progress.remainingDistance)} blocks left` : '';
+  const collection = isNumber(progress?.gained) && isNumber(progress?.requested) ? `${progress.gained}/${progress.requested} collected` : '';
+  const detail = progress?.state === 'suspended' ? 'Recovering' : movement || collection;
   setAgent(run.state === 'running' ? pending ? pending.tool.endsWith('__navigate') ? 'walking' : 'acting' : 'thinking' : 'idle',
-    pending ? title(toolLabel(pending.tool)) : activity.at(-1)?.type === 'continuation' ? 'Continuing the run' : 'Thinking');
+    detail ? `${label} · ${detail}` : label);
   renderDecision(run.decision);
   renderHealth();
 }
