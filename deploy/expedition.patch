@@ -1,0 +1,1485 @@
+diff --git a/src/actions/collect-block/collect-block.ts b/src/actions/collect-block/collect-block.ts
+index 653033b..50ec936 100644
+--- a/src/actions/collect-block/collect-block.ts
++++ b/src/actions/collect-block/collect-block.ts
+@@ -31,6 +31,7 @@ import { droppedItemName } from "../../world/item-pickup.js";
+ import { useItemAt } from "../../world/item-use.js";
+ import { observeToolTierLoss } from "../../world/tool-loss.js";
+ import { carriedSolidBlocks, placeSolidBlockInto } from "../../world/placement.js";
++import type { MakeInventoryRoom } from "../inventory-room.js";
+ import { defineAction, type ActionContext } from "../action.js";
+ import { blockMatchesSelector, expectedDropName, inventoryCounts, inventoryGains } from "./collection-facts.js";
+ import { createCollectionMovements } from "./collection-movements.js";
+@@ -173,6 +174,7 @@ function beginCollectBlock(
+   discarded: DiscardedItems,
+   observe: ObserveRequest = () => {},
+   lifetime?: AbortSignal,
++  makeRoom?: MakeInventoryRoom,
+ ) {
+   const inventoryBefore = inventoryCounts(bot);
+   const start = bot.entity.position.clone();
+@@ -212,7 +214,9 @@ function beginCollectBlock(
+         navigation.world,
+         buildingBlocks().reduce((count, item) => count + item.count, 0),
+       );
+-    const stop = inventoryStop(bot, request, collectable) ?? exactTargetStop(bot, request, canMine);
++    const targetStop = exactTargetStop(bot, request, canMine);
++    if (!targetStop && inventoryStop(bot, request, collectable)) await makeRoom?.(collectable, { signal: context.signal });
++    const stop = targetStop ?? inventoryStop(bot, request, collectable);
+     if (stop) {
+       return settle(bot, request, inventoryBefore, collectable, start, { status: "stopped", broken, reason: stop });
+     }
+@@ -379,6 +383,7 @@ export function createCollectBlockAction(
+   bot: Bot,
+   navigation: NavigationRuntime,
+   discarded: DiscardedItems = createDiscardedItems(),
++  makeRoom?: MakeInventoryRoom,
+ ) {
+   return defineAction({
+     checkpointSchema: collectCheckpointSchema,
+@@ -394,6 +399,6 @@ export function createCollectBlockAction(
+       openWorldHint: true,
+     },
+     parse: parseCollectBlockRequest,
+-    begin: (request, lifetime, observe) => beginCollectBlock(bot, navigation, request, discarded, observe, lifetime),
++    begin: (request, lifetime, observe) => beginCollectBlock(bot, navigation, request, discarded, observe, lifetime, makeRoom),
+   });
+ }
+diff --git a/src/actions/ensure-items-contract.ts b/src/actions/ensure-items-contract.ts
+index 2feb7ec..7e9c877 100644
+--- a/src/actions/ensure-items-contract.ts
++++ b/src/actions/ensure-items-contract.ts
+@@ -5,27 +5,29 @@ import { registryNameSchema } from "./registry-name.js";
+ 
+ export const ENSURE_ITEMS = "ensure_items";
+ export const ENSURE_ITEMS_DESCRIPTION =
+-  "Reach a carried item quantity or fill specific equipment slots. Uses carried stock first, then available recipes and loaded sources. The result reports each remaining deficit and any blocker.";
++  "Reach a carried item quantity or fill specific equipment slots. Uses carried stock first, then available recipes and loaded sources. List each item count or equipment slot, or select the nether expedition loadout. The result reports remaining deficits and any blocker.";
+ 
+ export const ensureItemsInputSchema = z.strictObject({
++  loadout: z.literal("nether").optional().describe("Prepare the complete Nether expedition kit."),
+   items: z.array(z.strictObject({
+     item_name: registryNameSchema,
+     count: z.number().int().min(1).max(64).optional().describe("Minimum to carry. Defaults to one."),
+     destination: z.enum(EQUIPMENT_DESTINATIONS).optional().describe("Equip one in this slot."),
+   }).refine((item) => item.destination === undefined || (item.count ?? 1) === 1,
+-    "An equipment target has a count of one.")).min(1).max(6).superRefine((items, ctx) => {
++    "An equipment target has a count of one.")).min(1).max(16).superRefine((items, ctx) => {
+       const targets = items.map((item) => item.destination ?? item.item_name);
+       if (new Set(targets).size !== targets.length) {
+         ctx.addIssue({ code: "custom", message: "List each equipment slot or carried item once." });
+       }
+-    }),
+-});
++    }).optional(),
++}).refine((input) => Boolean(input.items) !== Boolean(input.loadout), "Choose items or a loadout.");
+ 
+ const targetResult = z.strictObject({
+   item: registryNameSchema, requested: z.number().int(), present: z.number().int(),
+   destination: z.enum(EQUIPMENT_DESTINATIONS).optional(),
+ });
+ export const ensureItemsResultSchema = actionResultSchema({
++  loadout: z.literal("nether").optional(),
+   items: z.array(targetResult),
+   steps: z.array(z.string()),
+   position: z.strictObject({ x: z.number(), y: z.number(), z: z.number(), dimension: z.string() }),
+diff --git a/src/actions/ensure-items.test.ts b/src/actions/ensure-items.test.ts
+index 70bd8ab..fa612d5 100644
+--- a/src/actions/ensure-items.test.ts
++++ b/src/actions/ensure-items.test.ts
+@@ -5,10 +5,11 @@ import { ActionRunner } from "../session/action-runner.js";
+ import { botFixture, type FakeStack } from "../test-support/bot.js";
+ import type { NavigationRuntime } from "../navigation/index.js";
+ import { actionResultSchema, defineAction } from "./action.js";
++import { inventoryRoom } from "./inventory-room.js";
+ import { createEnsureItemsAction } from "./ensure-items.js";
+ 
+ test("a survival interruption rechecks inventory before repeating the interrupted operation", async () => {
+-  const items: FakeStack[] = [{ name: "oak_log", count: 1 }, { name: "cobblestone", count: 3 }];
++  const items: FakeStack[] = [{ name: "oak_log", count: 1 }, { name: "cobblestone", count: 3 }, { name: "crafting_table", count: 1 }];
+   const bot = botFixture({ items }, {
+     clearControlStates() {},
+     deactivateItem() {},
+@@ -49,3 +50,39 @@ test("a survival interruption rechecks inventory before repeating the interrupte
+   assert.equal(craftCalls, 1);
+   assert.deepEqual(output.interruptions, ["Protect the bot"]);
+ });
++
++test("a full inventory deposits excess before acquiring the requested loadout item", async () => {
++  const items: FakeStack[] = [
++    { name: "rotten_flesh", count: 5 },
++    { name: "cobblestone", count: 64 },
++    { name: "oak_log", count: 1 },
++    ...Array.from({ length: 33 }, () => ({ name: "dirt", count: 1 })),
++  ];
++  const bot = botFixture({ items, blocks: { "1,64,0": "chest" } }, {
++    clearControlStates() {}, deactivateItem() {},
++    findBlock: () => bot.blockAt(bot.entity.position.offset(1, 0, 0)),
++    recipesAll: (id: number) => id === bot.registry.itemsByName.oak_planks.id
++      ? [{ result: { id, count: 4 }, delta: [{ id: bot.registry.itemsByName.oak_log.id, count: -1 }], requiresTable: false }]
++      : [],
++  });
++  const calls: string[] = [];
++  const work = (name: string, execute: (input: unknown) => void) => defineAction({
++    name, description: "Record inventory changes.", inputSchema: z.object({}).passthrough(),
++    resultSchema: actionResultSchema({}), formatResult: () => "",
++    parse: (input) => input, execution: { kind: "task" },
++    async execute(input) { calls.push(name); execute(input); return { status: "succeeded" }; },
++  });
++  const craft = work("craft_item", () => items.push({ name: "oak_planks", count: 4 }));
++  const deposit = work("use_container", (input) => {
++    assert.equal((input as { items: { item_name: string }[] }).items[0]?.item_name, "rotten_flesh");
++    items.shift();
++  });
++  const objective = createEnsureItemsAction(bot, { cancel() {} } as NavigationRuntime, {
++    craft, smelt: craft, equip: craft, collect: craft, hunt: craft,
++    makeRoom: inventoryRoom(bot, deposit as never, craft as never),
++  });
++  const output = await new ActionRunner().run(objective, { items: [{ item_name: "oak_planks", count: 4 }] });
++  assert.equal(output.result.status, "succeeded");
++  assert.deepEqual(calls, ["use_container", "craft_item"]);
++  assert.equal(items.find(({ name }) => name === "cobblestone")?.count, 64);
++});
+diff --git a/src/actions/ensure-items.ts b/src/actions/ensure-items.ts
+index ab57c2e..8161f70 100644
+--- a/src/actions/ensure-items.ts
++++ b/src/actions/ensure-items.ts
+@@ -2,6 +2,9 @@ import type { Bot } from "mineflayer";
+ import { prepareBotForMovement } from "../session/prepare-body.js";
+ import type { NavigationRuntime } from "../navigation/index.js";
+ import { planCraftingFromInventory } from "../utils/craft-plan.js";
++import { expeditionFood, loadoutItemLabel, netherLoadout, netherLoadoutTargets, type LoadoutTarget } from "./nether-loadout.js";
++import { harvestTier } from "../world/tool-tiers.js";
++import type { MakeInventoryRoom } from "./inventory-room.js";
+ import { carriedCount } from "../world/inventory-count.js";
+ import { defineAction, type Action, type ActionContext, type ActionResult } from "./action.js";
+ import { expectedDropName } from "./collect-block/collection-facts.js";
+@@ -12,8 +15,12 @@ import { ENSURE_ITEMS, ENSURE_ITEMS_DESCRIPTION, ensureItemsCheckpointSchema, en
+   ensureItemsResultSchema } from "./ensure-items-contract.js";
+ import { fuelCapacity } from "./smelt-item/smelt-item.js";
+ 
+-const maxSteps = 32;
++const maxSteps = 96;
+ const maxDependencyDepth = 8;
++const diamondCraftCosts: Readonly<Record<string, number>> = {
++  diamond_helmet: 5, diamond_chestplate: 8, diamond_leggings: 7, diamond_boots: 4, diamond_pickaxe: 3, diamond_sword: 2,
++};
++const oreSources: Readonly<Record<string, string>> = { diamond: "diamond_ore", raw_gold: "gold_ore", raw_iron: "iron_ore", coal: "coal_ore" };
+ // This version's recipe registry describes crafting. Keep the supported furnace transformations explicit.
+ const furnaceInputs: Readonly<Record<string, string>> = {
+   cooked_beef: "beef", cooked_porkchop: "porkchop", cooked_mutton: "mutton",
+@@ -23,7 +30,8 @@ const furnaceInputs: Readonly<Record<string, string>> = {
+ };
+ type Child = { action: Action; input: Record<string, unknown>; item: string };
+ type Choice = Child | { blocker: string };
+-type Children = { collect: Action; hunt: Action; craft: Action; smelt: Action; equip: Action };
++type AcquisitionAttempt = (child: Child) => Child | null;
++type Children = { collect: Action; hunt: Action; craft: Action; smelt: Action; equip: Action; makeRoom?: MakeInventoryRoom };
+ 
+ function carriedFuel(bot: Bot, input: string, count: number): string | undefined {
+   return [...new Set(bot.inventory.items().map((item) => item.name))]
+@@ -40,42 +48,83 @@ function equipped(bot: Bot, slot: EquipmentDestination): string | null {
+   return equipmentSlots(bot)[slot === "off-hand" ? "offHand" : slot];
+ }
+ 
+-function chooseAcquisition(bot: Bot, children: Children, item: string, count: number, path: readonly string[] = []): Choice {
++function chooseAcquisition(bot: Bot, children: Children, item: string, count: number, next: AcquisitionAttempt, path: readonly string[] = []): Choice {
+   if (path.length === maxDependencyDepth || path.includes(item))
+     return { blocker: `No eligible acquisition path for ${item} from the current supplies.` };
+   const registered = bot.registry.itemsByName[item];
+   if (!registered) return { blocker: `Unknown item ${item}.` };
+   const nextPath = [...path, item];
+-  const prerequisite = (name: string, deficit: number) => chooseAcquisition(bot, children, name, deficit, nextPath);
++  const prerequisite = (name: string, deficit: number) => chooseAcquisition(bot, children, name, deficit, next, nextPath);
+ 
+   const canAcquire = (name: string) => Boolean(furnaceInputs[name]) ||
+     Object.values(bot.registry.blockLoot).some((entry) => entry.drops.some((drop) => drop.item === name)) ||
+     Object.values(bot.registry.entityLoot).some((entry) => entry.drops.some((drop) => drop.item === name));
+   const craft = planCraftingFromInventory(bot, [{ id: registered.id, name: item, count }], canAcquire);
+-  if (craft.kind === "ready") return { action: children.craft, input: { items: [{ item_name: item, count }] }, item };
++  if ((craft.kind === "ready" || craft.kind === "missing_materials") && craft.plan.requiresCraftingTable &&
++      carriedCount(bot, "crafting_table") === 0) {
++    const table = prerequisite("crafting_table", 1);
++    if ("action" in table) return table;
++  }
++  if (craft.kind === "ready") {
++    const choice = next({ action: children.craft, input: { items: [{ item_name: item, count }] }, item });
++    if (choice) return choice;
++  }
+   const furnaceInput = furnaceInputs[item];
+   if (furnaceInput) {
+     if (carriedCount(bot, furnaceInput) < count) return prerequisite(furnaceInput, count - carriedCount(bot, furnaceInput));
+     if (carriedCount(bot, "furnace") < 1) return prerequisite("furnace", 1);
+     const fuel = carriedFuel(bot, furnaceInput, count);
+     if (!fuel) return prerequisite("coal", Math.ceil(count / fuelCapacity("coal")) - carriedCount(bot, "coal"));
+-    return { action: children.smelt, input: { temporary_workstation: true, item_name: furnaceInput, count, fuel_item_name: fuel }, item };
++    return next({ action: children.smelt, input: { temporary_workstation: true, item_name: furnaceInput, count, fuel_item_name: fuel }, item }) ??
++      { blocker: `No furnace progress was observed for ${item}.` };
++  }
++
++  const ore = oreSources[item];
++  if (ore) {
++    // The mining action can search beyond the currently loaded patch.
++    const tier = bot.inventory.items().reduce((best, stack) => stack.name.endsWith("_pickaxe")
++      ? Math.max(best, harvestTier(bot, stack.name)) : best, 0);
++    const required = item === "diamond" || item === "raw_gold" ? 3 : item === "raw_iron" ? 2 : 1;
++    if (tier < required) {
++      return prerequisite(required === 3 ? "iron_pickaxe" : required === 2 ? "stone_pickaxe" : "wooden_pickaxe", 1);
++    }
+   }
+ 
+   const candidates = Object.values(bot.registry.blockLoot).filter((entry) =>
+     entry.drops.some((drop) => drop.item === item) && expectedDropName(bot, entry.block) === item);
+-  // Use the nearest loaded source. The collection executor still validates access, tools and pickups.
+-  const source = candidates.length ? bot.findBlock({
+-    matching: candidates.map((entry) => bot.registry.blocksByName[entry.block]?.id).filter((id) => id !== undefined),
+-    maxDistance: 64,
+-  }) : null;
+-  if (source) return { action: children.collect, input: { block_name: source.name, count: Math.min(count, MAX_COLLECT_BLOCKS) }, item };
++  const selectors = candidates.map((entry) => entry.block);
++  // Some blocks have version-dependent loot tables. The held tool is verified by collection.
++  if (item === "flint") selectors.push("gravel");
++  if (item === "apple") selectors.push("oak_leaves", "dark_oak_leaves");
++  if (item === "coal") selectors.push("coal_ore", "deepslate_coal_ore");
++  const blockSelector = (name: string) => name.startsWith("deepslate_") && name.endsWith("_ore") ? name.slice(10) : name;
++  const blockChoices = new Map(selectors.map((name) => [name, next({
++    action: children.collect,
++    input: { block_name: blockSelector(name), count: Math.min(item === "flint" ? count * 10 : item === "apple" ? 32 : count, MAX_COLLECT_BLOCKS) },
++    item,
++  })]));
++  const blockIds = selectors.flatMap((name) => {
++    const block = bot.registry.blocksByName[name];
++    return block && blockChoices.get(name) ? [block.id] : [];
++  });
++  const source = blockIds.length ? bot.findBlock?.({ matching: blockIds, maxDistance: 64 }) : null;
++  const mining = source && blockChoices.get(source.name);
++  if (mining && "action" in mining) return mining;
+ 
+   const mobs = new Set(Object.values(bot.registry.entityLoot).filter((entry) => entry.drops.some((drop) => drop.item === item))
+     .map((entry) => entry.entity));
+-  const quarry = mobs.size ? bot.nearestEntity((entity) => entity.name !== undefined && mobs.has(entity.name) &&
+-    entity.position.distanceTo(bot.entity.position) <= 32) : null;
+-  if (quarry?.name) return { action: children.hunt, input: { mob_name: quarry.name, drop_name: item, count }, item };
++  const hunts = new Map([...mobs].map((name) => [name, next({
++    action: children.hunt, input: { mob_name: name, drop_name: item, count }, item,
++  })]));
++  const quarry = hunts.size ? bot.nearestEntity?.((entity) => entity.name !== undefined && Boolean(hunts.get(entity.name)) &&
++    entity.position.distanceTo(bot.entity.position) <= 64) : null;
++  const hunt = quarry?.name && hunts.get(quarry.name);
++  if (hunt && "action" in hunt) return hunt;
++
++  if (ore) {
++    const discovered = next({ action: children.collect, input: { block_name: ore, count: Math.min(count, MAX_COLLECT_BLOCKS) }, item });
++    if (discovered) return discovered;
++  }
+ 
+   if (craft.kind === "missing_materials") {
+     for (const material of craft.plan.missingMaterials) {
+@@ -96,20 +145,27 @@ export function createEnsureItemsAction(bot: Bot, navigation: NavigationRuntime,
+     parse: (input) => ensureItemsInputSchema.parse(input),
+     formatResult: (result) => [
+       ...result.items.map(({ item, present, requested, destination }) =>
+-        `- ${item}: ${present}/${requested}${destination ? ` in ${destination}` : " carried"}`),
++        `- ${result.loadout ? loadoutItemLabel(item) : item}: ${present}/${requested}${destination ? ` in ${destination}` : " carried"}`),
+       ...(result.status === "succeeded" ? [] : [`Blocker: ${result.error}`]),
+     ].join("\n"),
+-    begin: ({ items }, lifetime, observe) => {
++    begin: ({ items, loadout }, lifetime, observe) => {
++      const requested: readonly LoadoutTarget[] = loadout ? netherLoadoutTargets : items!;
+       const steps: string[] = [];
++      const failedSources = new Map<string, number>();
++      const sourceKey = (choice: Child) => JSON.stringify([choice.action.name, choice.item, choice.input]);
++      const usable: AcquisitionAttempt = (choice) => (failedSources.get(sourceKey(choice)) ?? 0) <
++        (choice.item === "flint" || choice.item === "apple" ? 3 : 1) ? choice : null;
++      let lastAcquisitionError: string | undefined;
++      const clearedAt = new Set<number>();
+       let phase = "checking_inventory";
+       let child: { choice: Child; execute: (context: ActionContext) => Promise<ActionResult>; before: number; end: () => void } | undefined;
+-      const targets = () => items.map(({ item_name: item, count = 1, destination }) => ({
++      const targets = () => loadout ? netherLoadout(bot) : requested.map(({ item_name: item, count = 1, destination }) => ({
+         item, requested: count, destination,
+         present: destination ? Number(equipped(bot, destination) === item) : carriedCount(bot, item),
+       }));
+       const receipt = () => {
+         const { x, y, z } = bot.entity.position;
+-        return { items: targets(), steps: [...steps], position: { x, y, z, dimension: bot.game.dimension } };
++        return { ...(loadout && { loadout }), items: targets(), steps: [...steps], position: { x, y, z, dimension: bot.game.dimension } };
+       };
+       const blocked = (error: string) => {
+         const evidence = receipt();
+@@ -132,11 +188,36 @@ export function createEnsureItemsAction(bot: Bot, navigation: NavigationRuntime,
+           if (!target) return { ...receipt(), status: "succeeded" };
+ 
+           if (!child) {
++            const currentSpace = bot.inventory.emptySlotCount();
+             const carried = carriedCount(bot, target.item);
+-            const choice = target.destination && carried > 0 ? {
+-              action: children.equip, input: { items: [{ item_name: target.item, destination: target.destination }] }, item: target.item,
+-            } : chooseAcquisition(bot, children, target.item, target.requested - target.present);
+-            if ("blocker" in choice) return blocked(choice.blocker);
++            const equipTarget = target.destination && carried > 0
++              ? { action: children.equip, input: { items: [{ item_name: target.item, destination: target.destination }] }, item: target.item }
++              : null;
++            const missingDiamonds = loadout && diamondCraftCosts[target.item] !== undefined
++              ? targets().reduce((total, entry) => total + (diamondCraftCosts[entry.item] ?? 0) * Math.max(
++                0, entry.requested - (entry.destination ? Math.max(entry.present, carriedCount(bot, entry.item)) : entry.present),
++              ), 0) - carriedCount(bot, "diamond")
++              : 0;
++            const alternatives = missingDiamonds > 0 ? ["diamond"] :
++              loadout && target.item === "cooked_beef" ? expeditionFood : [target.item];
++            const deficit = missingDiamonds > 0 ? missingDiamonds : target.requested - target.present;
++            let agenda: Choice = equipTarget ?? { blocker: `No eligible source was found for ${target.item}.` };
++            if (!equipTarget) {
++              for (const item of alternatives) {
++                agenda = chooseAcquisition(bot, children, item, deficit, usable);
++                if ("action" in agenda) break;
++              }
++            }
++            const protectedNames = new Set(requested.map(({ item_name }) => item_name));
++            if ("action" in agenda) protectedNames.add(agenda.item);
++            if (!equipTarget && currentSpace <= 1 && !clearedAt.has(currentSpace) && children.makeRoom) {
++              const room = await children.makeRoom(protectedNames, { signal });
++              clearedAt.add(currentSpace);
++              if (room) steps.push(room);
++              signal?.throwIfAborted();
++            }
++            const choice = agenda;
++            if ("blocker" in choice) return blocked([choice.blocker, lastAcquisitionError].filter(Boolean).join(" "));
+             const request = choice.action.parse(choice.input);
+             const childLifetime = new AbortController();
+             const childSignal = AbortSignal.any([lifetime, childLifetime.signal]);
+@@ -166,9 +247,15 @@ export function createEnsureItemsAction(bot: Bot, navigation: NavigationRuntime,
+           running.end();
+           child = undefined;
+           steps.push(`${phase} ${running.choice.item}`);
+-          if (result.status !== "succeeded") return blocked(result.error);
+-          if (phase !== "equip" && carriedCount(bot, running.choice.item) <= running.before)
+-            return blocked(`No gain of ${running.choice.item} was observed after ${phase}.`);
++          if (bot.inventory.emptySlotCount() > 1) clearedAt.clear();
++          if (phase === "equip") {
++            if (result.status !== "succeeded") return blocked(result.error);
++          } else if (carriedCount(bot, running.choice.item) <= running.before) {
++            lastAcquisitionError = result.status === "succeeded"
++              ? `No gain of ${running.choice.item} after ${phase}.` : result.error;
++            const source = sourceKey(running.choice);
++            failedSources.set(source, (failedSources.get(source) ?? 0) + 1);
++          }
+         }
+         return targets().every((item) => item.present >= item.requested)
+           ? { ...receipt(), status: "succeeded" }
+diff --git a/src/actions/explore-frontier/explore-frontier.ts b/src/actions/explore-frontier/explore-frontier.ts
+index 06fffe3..cc6d99c 100644
+--- a/src/actions/explore-frontier/explore-frontier.ts
++++ b/src/actions/explore-frontier/explore-frontier.ts
+@@ -34,8 +34,7 @@ import {
+ } from "./contract.js";
+ 
+ const LEG_DISTANCE = 16;
+-// One scaffold must save roughly 16 walking blocks (5 ticks each). Exploration
+-// can follow a shore instead of spending its expedition supplies on a bridge.
++// In the Overworld, prefer walking around terrain where a bridge offers little time savings.
+ const EXPLORATION_PLACEMENT_PENALTY = 80;
+ /** A leg is judged at the feet cell's centre; the settled bot may stand up to half a block short of it. */
+ const ARRIVAL_SLACK = 0.5;
+@@ -200,7 +199,9 @@ export function beginExploreFrontier(
+       // Standard bot movements with digging and scaffolding enabled allow
+       // the bot to navigate natural uneven terrain, scale hills/cliffs, break
+       // obstructing foliage, and bridge gaps during frontier exploration.
+-      const movements = dependencies.createMovements(bot, { placementPenalty: EXPLORATION_PLACEMENT_PENALTY });
++      const movements = dependencies.createMovements(bot, dimension === "the_nether"
++        ? { avoidExposedGapJumps: true }
++        : { placementPenalty: EXPLORATION_PLACEMENT_PENALTY });
+ 
+       let stopError: string | null = null;
+       while (enteredBiome === null && currentExpansion() < request.chunks) {
+diff --git a/src/actions/hunt-mob/contract.ts b/src/actions/hunt-mob/contract.ts
+index 44f3905..910b2c3 100644
+--- a/src/actions/hunt-mob/contract.ts
++++ b/src/actions/hunt-mob/contract.ts
+@@ -23,6 +23,8 @@ export const huntMobInputSchema = z
+       .describe(
+         "Without camping: one finite observation window after the first absence of loaded quarry; zero returns immediately and the window never renews. With camp_spawner: required positive wait before returning, and a second wait of the same duration at the spawner. No quarry there returns observation_exhausted. Reflex suspension does not renew either deadline.",
+       ),
++    max_hunt_seconds: z.number().int().min(10).max(600).optional().describe("Total pursuit and observation time. Defaults to five minutes, including survival interruptions."),
++    hunt_radius: z.number().int().min(8).max(192).optional().describe("Maximum distance of eligible quarry from the hunt start. Defaults to 96 blocks."),
+     camp_spawner: z
+       .boolean()
+       .default(false)
+@@ -47,6 +49,8 @@ export interface HuntMobRequest {
+   readonly count: number;
+   readonly observeForMs: number;
+   readonly campSpawner: boolean;
++  readonly maxHuntSeconds?: number;
++  readonly huntRadius?: number;
+   /** Consent to fight a hostile species unshielded; meaningless for passive quarry. */
+   readonly allowWithoutShield: boolean;
+ }
+@@ -59,6 +63,8 @@ export function parseHuntMobRequest(input: unknown): HuntMobRequest {
+     count: value.count,
+     observeForMs: value.observe_for_ms,
+     campSpawner: value.camp_spawner,
++    ...(value.max_hunt_seconds !== undefined && { maxHuntSeconds: value.max_hunt_seconds }),
++    ...(value.hunt_radius !== undefined && { huntRadius: value.hunt_radius }),
+     allowWithoutShield: value.allow_without_shield,
+   };
+ }
+@@ -160,6 +166,7 @@ export const huntTerminationSchema = z.enum([
+   "quantity_collected",
+   "no_loaded_targets",
+   "observation_exhausted",
++  "hunt_budget_exhausted",
+   "spawner_unavailable",
+   "spawner_unreachable",
+   "targets_unreachable",
+diff --git a/src/actions/hunt-mob/hunt-mob.test.ts b/src/actions/hunt-mob/hunt-mob.test.ts
+index 6e13ce9..64960e8 100644
+--- a/src/actions/hunt-mob/hunt-mob.test.ts
++++ b/src/actions/hunt-mob/hunt-mob.test.ts
+@@ -212,6 +212,47 @@ function died(attacks: number, x: number): TargetEngagement {
+   return { outcome: outcome("died", attacks), deathPosition: { x, y: 64, z: 0 } };
+ }
+ 
++test("a hunt returns existing gains through safe handoff when the total budget ends", async (t) => {
++  const budget = new AbortController();
++  t.mock.method(AbortSignal, "timeout", () => budget.signal);
++  const inventory = { count: 0 };
++  const bot = huntBot([], inventory);
++  let finished = false;
++  const result = await huntMob(bot, parseHuntMobRequest({
++    mob_name: "sheep", drop_name: "white_wool", count: 2, max_hunt_seconds: 10,
++  }), {}, {
++    ...dependencies(bot, inventory, []),
++    pursue: async ({ signal }) => {
++      inventory.count = 1;
++      budget.abort(new Error("Fixture reached the hunt deadline."));
++      signal?.throwIfAborted();
++      throw new Error("Pursuit did not receive the deadline.");
++    },
++    finish: (signal) => {
++      assert.equal(signal.aborted, false);
++      finished = true;
++      return fakeCombat.finish(signal);
++    },
++  });
++  assert.equal(result.status, "partial");
++  assert.equal(result.hunt.gained, 1);
++  assert.equal(result.termination, "hunt_budget_exhausted");
++  assert.equal(finished, true);
++});
++
++test("a bounded hunt leaves quarry outside its starting area alone", async () => {
++  const registry = minecraftData("1.21.4");
++  const inventory = { count: 0 };
++  const sheep = registry.entitiesByName.sheep.id;
++  const bot = huntBot([mob(1, sheep, "sheep", 30), mob(2, sheep, "sheep", 3)], inventory);
++  const result = await huntMob(bot, parseHuntMobRequest({
++    mob_name: "sheep", drop_name: "white_wool", count: 2, hunt_radius: 16,
++  }), {}, dependencies(bot, inventory, [died(1, 3)]));
++  assert.equal(result.status, "partial");
++  assert.equal(result.hunt.gained, 1);
++  assert.equal(result.termination, "no_loaded_targets");
++});
++
+ test("quota attainment waits for handoff and cannot report success when withdrawal is unsafe", async () => {
+   const inventory = { count: 0 };
+   const bot = huntBot([], inventory);
+diff --git a/src/actions/hunt-mob/hunt-mob.ts b/src/actions/hunt-mob/hunt-mob.ts
+index da67567..8a6b7b1 100644
+--- a/src/actions/hunt-mob/hunt-mob.ts
++++ b/src/actions/hunt-mob/hunt-mob.ts
+@@ -28,6 +28,7 @@ import {
+   snapshotEntityIds,
+   type ObservedItemEntity,
+ } from "../../world/item-pickup.js";
++import type { MakeInventoryRoom } from "../inventory-room.js";
+ import { defineAction, type ActionContext } from "../action.js";
+ import {
+   huntMobAnnotations,
+@@ -68,6 +69,8 @@ export interface HuntDrop {
+ }
+ 
+ /** What the hunt decides about a pursuit; the walk and the movement policy belong to navigation. */
++type HuntArea = { readonly origin: import("vec3").Vec3; readonly radius: number };
++
+ export type HuntPursuit = Omit<HuntRequest, "route" | "movements">;
+ 
+ export interface HuntMobDependencies {
+@@ -85,7 +88,7 @@ export interface HuntMobDependencies {
+     context: ActionContext,
+   ) => Promise<HuntDropCollection>;
+   readonly sweepDropsAfterDeath: (observation: HuntSweepObservation, context: ActionContext) => Promise<number>;
+-  readonly gatherLoadedDrops: (drop: HuntDrop, context: ActionContext) => Promise<number>;
++  readonly gatherLoadedDrops: (drop: HuntDrop, context: ActionContext, area?: HuntArea) => Promise<number>;
+   /** Whether the combat policy permits raising a shield at all, which carrying one does not settle. */
+   readonly shieldPermitted: () => boolean;
+ }
+@@ -162,7 +165,7 @@ export function huntMobDependencies(
+       collectDropAfterDeath(bot, navigation, observation, context, discarded),
+     sweepDropsAfterDeath: (observation, context) =>
+       sweepDropsAfterDeath(bot, navigation, observation, context, discarded),
+-    gatherLoadedDrops: (drop, context) => gatherLoadedDrops(bot, navigation, drop, context, discarded),
++    gatherLoadedDrops: (drop, context, area) => gatherLoadedDrops(bot, navigation, drop, context, discarded, area),
+   };
+ }
+ 
+@@ -325,6 +328,7 @@ export async function gatherLoadedDrops(
+   drop: HuntDrop,
+   context: ActionContext,
+   discarded: DiscardedItems,
++  area?: HuntArea,
+ ): Promise<number> {
+   const attempted = new Set<number>();
+   let collected = 0;
+@@ -333,10 +337,8 @@ export async function gatherLoadedDrops(
+     const item = findNewItemEntity(bot, {
+       baseline: attempted,
+       itemName: drop.name,
+-      source: bot.entity.position,
+-      // The hunt pursues loaded mobs without a radius; their requested drops
+-      // deserve the same reach, including a reflex kill on another ledge.
+-      maxDistance: Number.POSITIVE_INFINITY,
++      source: area?.origin ?? bot.entity.position,
++      maxDistance: area?.radius ?? Number.POSITIVE_INFINITY,
+       ignoreIds: discarded.ignored(),
+     });
+     if (!item) return collected;
+@@ -509,6 +511,7 @@ interface HuntEngagement {
+   readonly drop: HuntDrop;
+   readonly observation: HuntObservation;
+   readonly dependencies: HuntMobDependencies;
++  readonly area: HuntArea;
+   readonly context: ActionContext;
+ }
+ 
+@@ -521,7 +524,7 @@ interface HuntEngagement {
+  * has to translate back.
+  */
+ async function fightAndCollect(fight: HuntEngagement, targetId: number): Promise<EngagementOutcome> {
+-  const { bot, request, drop, observation, dependencies, context } = fight;
++  const { bot, request, drop, observation, dependencies, context, area } = fight;
+   const target = bot.entities[targetId];
+   if (!target?.isValid) return { kind: "target_lost" };
+   observation.targetsEngaged += 1;
+@@ -535,7 +538,7 @@ async function fightAndCollect(fight: HuntEngagement, targetId: number): Promise
+   // Incidental pack kills can leave the requested item even when the selected
+   // target survives or disappears. Gather that evidence before choosing another mob.
+   if (outcome.kind === "target_lost" || outcome.kind === "unreachable") {
+-    await dependencies.gatherLoadedDrops(drop, context);
++    await dependencies.gatherLoadedDrops(drop, context, area);
+     if (settleInventory(bot, drop, observation)) return { kind: "defeated" };
+   }
+ 
+@@ -611,10 +614,20 @@ function beginHuntMob(
+   lifetime: AbortSignal,
+   observe: ObserveRequest = () => {},
+   budgets = new Budgets(),
++  makeRoom?: MakeInventoryRoom,
+ ) {
+   const mob = bot.registry.entitiesByName[request.mobName];
+   const drop = bot.registry.itemsByName[request.dropName];
+   const inventoryBefore = drop ? bot.inventory.count(drop.id, null) : 0;
++  const origin = bot.entity.position.clone();
++  const radius = request.huntRadius ?? 96;
++  const inScope = (entity: Entity) => entity.position.distanceTo(origin) <= radius;
++  const budget = AbortSignal.timeout((request.maxHuntSeconds ?? 300) * 1_000);
++  const budgetStop = () => stoppedResult(
++    "[HUNT_BUDGET_EXHAUSTED] The hunt reached its overall pursuit and observation limit.",
++    observation,
++    "hunt_budget_exhausted",
++  );
+   const camp = request.campSpawner ? dependencies.createCamp(request.observeForMs) : null;
+   const observation: HuntObservation = {
+     stopReason: "execution_failed",
+@@ -680,20 +693,22 @@ function beginHuntMob(
+     if (missingSpawner) return stoppedResult(missingSpawner.reason, observation, missingSpawner.termination);
+ 
+     const quarry: HuntDrop = { name: request.dropName, id: drop.id };
+-    const fight: HuntEngagement = { bot, request, drop: quarry, observation, dependencies, context };
++    const area = { origin, radius };
++    const fight: HuntEngagement = { bot, request, drop: quarry, observation, dependencies, context, area };
+     const settled = () => settleInventory(bot, quarry, observation);
+     const inventoryStop = () =>
+       hasInventorySpaceFor(bot.inventory, new Set([quarry.name]))
+         ? null
+         : `[INVENTORY_FULL] No free slot or matching stack space for ${quarry.name}.`;
+ 
+-    if (!settled()) await dependencies.gatherLoadedDrops(quarry, context);
++    if (!settled() && inventoryStop()) await makeRoom?.(new Set([quarry.name]), { signal: context.signal });
++    if (!settled()) await dependencies.gatherLoadedDrops(quarry, context, area);
+     const initialInventoryStop = inventoryStop();
+     if (!settled() && initialInventoryStop) return stoppedResult(initialInventoryStop, observation, "inventory_full");
+ 
+     const pursuit = await dependencies.pursue({
+       preflight: checkShield,
+-      matches: (entity) => entity.entityType === mob.id && entity.isValid,
++      matches: (entity) => entity.entityType === mob.id && entity.isValid && inScope(entity),
+       compareTargets: (left, right) => compareCollectionTargets(bot, left, right),
+       isSatisfied: settled,
+       contactRange: HOSTILE_CONTACT_RANGE,
+@@ -715,7 +730,7 @@ function beginHuntMob(
+         observation.selectedTargetId = selected.id;
+       },
+       engage: async (targetId) => {
+-        if (!settled()) await dependencies.gatherLoadedDrops(quarry, context);
++        if (!settled()) await dependencies.gatherLoadedDrops(quarry, context, area);
+         if (settled()) return { kind: "defeated" };
+         const unshielded = checkShield();
+         if (unshielded) return { kind: "stopped", reason: unshielded };
+@@ -725,7 +740,7 @@ function beginHuntMob(
+       },
+     });
+ 
+-    if (pursuit.status === "no_targets" && !settled()) await dependencies.gatherLoadedDrops(quarry, context);
++    if (pursuit.status === "no_targets" && !settled()) await dependencies.gatherLoadedDrops(quarry, context, area);
+ 
+     const met = settled();
+     const evidence = huntEvidence(observation);
+@@ -738,18 +753,34 @@ function beginHuntMob(
+   };
+ 
+   return async (context: ActionContext): Promise<HuntMobResult> => {
++    const pursuitContext = { ...context, signal: AbortSignal.any(context.signal ? [context.signal, budget] : [budget]) };
+     try {
+       const available = () =>
+-        Object.values(bot.entities).some((entity) => entity.isValid && entity.entityType === mob?.id) ||
++        Object.values(bot.entities).some((entity) => entity.isValid && entity.entityType === mob?.id && inScope(entity)) ||
+         (drop !== undefined && settleInventory(bot, { name: request.dropName, id: drop.id }, observation));
+       while (phase.kind !== "finishing") {
+         phase = { kind: "collecting" };
+         if (available()) camp?.hunting();
+-        const result = await run(context);
++        const result = await run(pursuitContext).catch((cause: unknown) => {
++          if (!budget.aborted || context.signal?.aborted) throw cause;
++          if (drop) settleInventory(bot, { name: request.dropName, id: drop.id }, observation);
++          return budgetStop();
++        });
++        if (budget.aborted && result.status !== "succeeded") {
++          phase = { kind: "finishing", result: budgetStop() };
++          break;
++        }
+         context.signal?.throwIfAborted();
+         if (result.termination === "no_loaded_targets" && camp) {
+           phase = { kind: "observing" };
+-          const failure = await camp.waitForQuarry(available, context.signal ?? lifetime);
++          const failure = await camp.waitForQuarry(available, pursuitContext.signal).catch((cause: unknown) => {
++            if (!budget.aborted || context.signal?.aborted) throw cause;
++            return null;
++          });
++          if (budget.aborted) {
++            phase = { kind: "finishing", result: budgetStop() };
++            break;
++          }
+           if (!failure) continue;
+           phase = { kind: "finishing", result: stoppedResult(failure.reason, observation, failure.termination) };
+           break;
+@@ -772,10 +803,14 @@ function beginHuntMob(
+           const appeared =
+             remaining > 0 &&
+             (await waitForSignal(() => available() || null, bot, ["entitySpawn", "entityUpdate", "physicsTick"], {
+-              context,
++              context: pursuitContext,
+               timeoutMs: remaining,
+             }));
+           context.signal?.throwIfAborted();
++          if (budget.aborted) {
++            phase = { kind: "finishing", result: budgetStop() };
++            break;
++          }
+           if (appeared || available()) continue;
+           phase = {
+             kind: "finishing",
+@@ -888,6 +923,7 @@ export function createCollectMobDropAction(
+   discarded: DiscardedItems,
+   dependencies: HuntMobDependencies = huntMobDependencies(bot, navigation, combat, discarded),
+   budgets = new Budgets(),
++  makeRoom?: MakeInventoryRoom,
+ ) {
+   return defineAction({
+     checkpointSchema: huntCheckpointSchema,
+@@ -902,7 +938,7 @@ export function createCollectMobDropAction(
+     begin: (request, lifetime, observe) => {
+       if (request.dropName === "arrow") combat.policy.reserveArrows(lifetime);
+       combat.policy.declareQuarry(lifetime, request.mobName);
+-      return beginHuntMob(bot, request, dependencies, lifetime, observe, budgets);
++      return beginHuntMob(bot, request, dependencies, lifetime, observe, budgets, makeRoom);
+     },
+   });
+ }
+diff --git a/src/actions/index.ts b/src/actions/index.ts
+index 3773556..78be3d2 100644
+--- a/src/actions/index.ts
++++ b/src/actions/index.ts
+@@ -28,6 +28,7 @@ import { createDebugSetPathfinderTelemetryAction } from "./debug-set-pathfinder-
+ import { createDestroyEndCrystalAction } from "./destroy-end-crystal/index.js";
+ import { createDropItemAction } from "./drop-item/index.js";
+ import { createEatFoodAction } from "./eat-food/index.js";
++import { inventoryRoom } from "./inventory-room.js";
+ import { createEnsureItemsAction } from "./ensure-items.js";
+ import { createEquipAction } from "./equip/index.js";
+ import { createExploreFrontierAction } from "./explore-frontier/index.js";
+@@ -88,11 +89,14 @@ export function createActions(
+   // One registry, shared: the dropper records what it threw away and the hunt's
+   // sweep reads the same set, so a deliberate discard is not picked back up.
+   const discarded = createDiscardedItems();
+-  const collect = createCollectBlockAction(bot, navigation, discarded);
+-  const hunt = createCollectMobDropAction(bot, navigation, combat, discarded, undefined, budgets);
+   const craft = createCraftItemAction(bot, navigation);
+   const smelt = createSmeltItemAction(bot, navigation);
+   const equip = createEquipAction(bot);
++  const drop = createDropItemAction(bot, navigation, discarded);
++  const container = createUseContainerAction(bot, navigation, botData);
++  const makeRoom = inventoryRoom(bot, container, drop);
++  const collect = createCollectBlockAction(bot, navigation, discarded, makeRoom);
++  const hunt = createCollectMobDropAction(bot, navigation, combat, discarded, undefined, budgets, makeRoom);
+   const actions: Action[] = [
+     createSetSurvivalPolicyAction(combat.policy),
+     createDestroyEndCrystalAction(bot, combat),
+@@ -102,7 +106,7 @@ export function createActions(
+     createCancelForegroundAction(cancelForegroundAction),
+     collect,
+     craft,
+-    createDropItemAction(bot, navigation, discarded),
++    drop,
+     createBarterAction(bot, navigation),
+     createEatFoodAction(bot),
+     equip,
+@@ -124,9 +128,9 @@ export function createActions(
+     createSendMessageAction(bot),
+     createSleepAction(bot, navigation),
+     smelt,
+-    createEnsureItemsAction(bot, navigation, { collect, hunt, craft, smelt, equip }),
++    createEnsureItemsAction(bot, navigation, { collect, hunt, craft, smelt, equip, makeRoom }),
+     createUseBucketAction(bot, navigation),
+-    createUseContainerAction(bot, navigation, botData),
++    container,
+     createViewBlocksAction(bot),
+     createViewCraftingRequirementsAction(bot),
+     createViewFrontierAction(botData, () => snapshotBotStatus(bot)),
+diff --git a/src/actions/inventory-room.ts b/src/actions/inventory-room.ts
+new file mode 100644
+index 0000000..3600b57
+--- /dev/null
++++ b/src/actions/inventory-room.ts
+@@ -0,0 +1,45 @@
++import type { Bot } from "mineflayer";
++import { isInFire, isInLava } from "../survival/perception/body.js";
++import { carriedCount } from "../world/inventory-count.js";
++import type { ActionContext } from "./action.js";
++import type { createDropItemAction } from "./drop-item/drop-item.js";
++import type { createUseContainerAction } from "./use-container/use-container.js";
++
++export type MakeInventoryRoom = (protectedNames: ReadonlySet<string>, context: ActionContext) => Promise<string | null>;
++
++const terrain = new Set(["dirt", "granite", "andesite", "diorite", "cobbled_deepslate", "netherrack", "cobblestone"]);
++const scaffoldReserve = 64;
++
++export function inventoryRoom(
++  bot: Bot,
++  container: ReturnType<typeof createUseContainerAction>,
++  drop: ReturnType<typeof createDropItemAction>,
++): MakeInventoryRoom {
++  return async (protectedNames, context) => {
++    context.signal?.throwIfAborted();
++    if (!bot.entity.onGround || isInLava(bot) || isInFire(bot) || bot.currentWindow) return null;
++    const free = bot.inventory.emptySlotCount();
++    const candidates = bot.inventory.items().filter(({ name }) => !protectedNames.has(name) && name !== bot.heldItem?.name);
++    const item = candidates.find(({ name }) => name === "rotten_flesh") ??
++      candidates.find(({ name, count }) => terrain.has(name) && carriedCount(bot, name) - count >= scaffoldReserve);
++    if (!item) return null;
++
++    // Never route to a distant chest while the parent is trying to finish local work.
++    const chest = bot.findBlock?.({
++      matching: [bot.registry.blocksByName.chest.id, bot.registry.blocksByName.trapped_chest.id],
++      maxDistance: 4,
++    });
++    if (chest) {
++      const { x, y, z } = chest.position;
++      const items = [{ item_name: item.name, count: item.count }];
++      await container.execute(container.parse({ operation: "deposit", x, y, z, items }), context);
++      if (bot.inventory.emptySlotCount() > free) return `Deposited ${item.name} at ${x}, ${y}, ${z}.`;
++    }
++
++    // The disposal primitive confirms the toss and shares its exclusion set with pickup.
++    const count = Math.min(item.count, carriedCount(bot, item.name));
++    if (!count) return null;
++    await drop.execute(drop.parse({ items: [{ item_name: item.name, count }], in_a_hole: true }), context);
++    return bot.inventory.emptySlotCount() > free ? `Discarded surplus ${item.name}.` : null;
++  };
++}
+diff --git a/src/actions/navigate/contract.ts b/src/actions/navigate/contract.ts
+index 13ce4ce..d3bb807 100644
+--- a/src/actions/navigate/contract.ts
++++ b/src/actions/navigate/contract.ts
+@@ -4,7 +4,7 @@ import { actionResultSchema, type ActionOutput } from "../action.js";
+ 
+ export const NAVIGATE = "navigate" as const;
+ export const NAVIGATE_DESCRIPTION =
+-  "Navigate to one absolute block position using standard Pathfinder movements. Omit y for an unambiguous outdoor ground column; roofs, foliage, or multiple floors require an explicit y. A given y must be a cell the bot can stand in or loaded open water with sufficient air and a clear ascent to the surface; a mid-air y is refused unless build is true, in which case the bot scaffolds up to it on purpose. Active portal cells require enter_nether_portal or enter_end_portal. Underwater descent is slow, limiting how deep the bot can dive before needing air. Pathfinder may dig obstructions unless dig is false and place carried blocks from the survival policy's scaffold list unless scaffold is false. Disable both to preserve existing blocks along the route. Planned water-bucket drops up to 80 blocks are controlled separately by navigation.bucket_drops in the survival policy and require automatic water recovery before continuing.";
++  "Reach an absolute destination. Pathfinder chooses the route and can recover a short intermediate route under the same request. Omit y for an unambiguous outdoor ground column; roofs, foliage, or multiple floors require an explicit y. A given y must be a cell the bot can stand in or loaded open water with sufficient air and a clear ascent to the surface; a mid-air y is refused unless build is true, in which case the bot scaffolds up to it on purpose. Active portal cells require enter_nether_portal or enter_end_portal. Underwater descent is slow, limiting how deep the bot can dive before needing air. Pathfinder may dig obstructions unless dig is false and place carried blocks from the survival policy's scaffold list unless scaffold is false. Disable both to preserve existing blocks along the route. Planned water-bucket drops up to 80 blocks are controlled separately by navigation.bucket_drops in the survival policy and require automatic water recovery before continuing.";
+ 
+ export const navigateInputSchema = z
+   .strictObject({
+diff --git a/src/actions/navigate/navigate.test.ts b/src/actions/navigate/navigate.test.ts
+index 537023d..4896594 100644
+--- a/src/actions/navigate/navigate.test.ts
++++ b/src/actions/navigate/navigate.test.ts
+@@ -330,6 +330,52 @@ test("reports a Pathfinder stop with the observed partial route", async () => {
+   assert.equal("navigation" in output.result ? output.result.navigation.end.x : null, 4);
+ });
+ 
++test("one navigation request can use a reachable short waypoint after a search limit", async () => {
++  const { bot } = botFixture();
++  const start = { x: 0, y: 64, z: 0 };
++  const waypoint = { x: 3, y: 64, z: 1 };
++  const target = { x: 10, y: 64, z: 0 };
++  const signal = new AbortController().signal;
++  const node = (feet: typeof start) => ({ feet, remainingScaffolds: 0, overlayId: "overlay:0" });
++  const observation = { position: start, stance: "supported" } as const;
++  const run: NavigateDependencies["navigate"] = async ({ goal, onCalculationFailure, onArrival }) => {
++    const failed = await onCalculationFailure?.({
++      observation: observation as Parameters<NonNullable<typeof onCalculationFailure>>[0]["observation"],
++      signal,
++      failure: {
++        kind: "search_limit",
++        search: { visited: 100, generated: 100, computeMs: 2_000, slices: 200, queued: 0 },
++        limit: {
++          kind: "search_time", limit: 2_000, observed: 2_000,
++          closest: { position: waypoint, heuristic: 28, routeCost: 25, basis: "best_heuristic_search_node" },
++        },
++      },
++    });
++    if (failed?.kind !== "continue") return { status: "stopped", reason: "Search limit", elapsedMs: 2_000 };
++    const interim = goal.resolve(observation as Parameters<typeof goal.resolve>[0]);
++    assert.equal(interim.kind, "active");
++    assert.equal(interim.isSatisfied(node(waypoint), goalTestWorld), true);
++    assert.equal(interim.isSatisfied(node(target), goalTestWorld), false);
++    bot.entity.position.set(3.5, 64, 1.5);
++    const there = { ...observation, position: waypoint };
++    const resumed = await onArrival?.({
++      observation: there as Parameters<NonNullable<typeof onArrival>>[0]["observation"],
++      signal, node: node(waypoint), goalRevision: interim.revision,
++    });
++    assert.equal(resumed?.kind, "continue");
++    const final = goal.resolve(there as Parameters<typeof goal.resolve>[0]);
++    assert.equal(final.kind, "active");
++    assert.equal(final.isSatisfied(node(target), goalTestWorld), true);
++    bot.entity.position.set(10.5, 64, 0.5);
++    return { status: "completed", elapsedMs: 3_000 };
++  };
++  const output = await new ActionRunner().run(
++    createNavigateAction(bot, fakeNavigation, dependencies(run)), { ...target, range: 0 },
++  );
++  assert.equal(output.result.status, "succeeded");
++  assert.equal("navigation" in output.result && output.result.navigation.remainingDistance, 0);
++});
++
+ test("keeps caller cancellation as a runtime outcome", async () => {
+   const { bot } = botFixture();
+   const controller = new AbortController();
+diff --git a/src/actions/navigate/navigate.ts b/src/actions/navigate/navigate.ts
+index 5a940cb..558e7b0 100644
+--- a/src/actions/navigate/navigate.ts
++++ b/src/actions/navigate/navigate.ts
+@@ -1,11 +1,12 @@
+ import { bucketDropTotals } from "../../navigation/mineflayer/water-landing.js";
+ import { navigateCheckpointSchema } from "../checkpoint-schemas.js";
+-/** Navigate once, then report the position the world actually yielded. */
++/** Keep the requested destination through local route recovery, then report observed arrival. */
+ import type { Bot } from "mineflayer";
+ import { Vec3 } from "vec3";
+ import {
+   canOccupyWater,
+   createMovements,
++  exactBlockGoal,
+   nearGoal,
+   nearXzGoal,
+   type Goal,
+@@ -226,6 +227,10 @@ function beginNavigate(
+     scaffoldBlockNames(bot).map((item) => [item, bot.inventory.count(bot.registry.itemsByName[item]?.id ?? -1, null)]),
+   );
+   let elapsedMs = 0;
++  let waypoint: Position3 | null = null;
++  // Keep the fallback budget and visited landings across survival interruptions.
++  const fallbackLandings = new Set<string>();
++  const maxFallbackLandings = 6;
+   let destination = request.y === null ? null : { x: request.x, y: request.y, z: request.z };
+   observe(() => ({
+     baseline: { dimension: startDimension, position: { ...start } },
+@@ -313,15 +318,43 @@ function beginNavigate(
+         }
+         const problem = portalProblem();
+         if (problem) return { kind: "invalid", observation: problem };
+-        return nearGoal(destination, request.range).resolve(observation);
++        return (waypoint ? exactBlockGoal(waypoint) : nearGoal(destination, request.range)).resolve(observation);
+       },
+     };
+ 
+     try {
+       route = await dependencies.navigate({
+-        movements: dependencies.createMovements(bot, { scaffolding: request.scaffold, allowDigging: request.dig }),
++        movements: dependencies.createMovements(bot, {
++          scaffolding: request.scaffold, allowDigging: request.dig,
++          ...(startDimension === "the_nether" && { avoidExposedGapJumps: true }),
++        }),
+         goal,
+         signal: context.signal,
++        onCalculationFailure: ({ failure, observation }) => {
++          if (waypoint || !destination || failure.kind !== "search_limit" || fallbackLandings.size >= maxFallbackLandings)
++            return { kind: "stop" };
++          const cell = failure.limit.closest.position;
++          const current = asVec3(observation.position);
++          const landing = asVec3(cell);
++          const target = asVec3(destination);
++          const key = landing.toString();
++          if (
++            fallbackLandings.has(key) || current.distanceTo(landing) < 2 ||
++            target.distanceTo(landing) >= target.distanceTo(current) - 1 ||
++            !standable(bot, landing) || bot.blockAt(landing)?.name.endsWith("_portal")
++          )
++            return { kind: "stop" };
++          // The search already reached this node in its graph. Route to it as a
++          // short goal, then restore the original destination under the same action.
++          fallbackLandings.add(key);
++          waypoint = cell;
++          return { kind: "continue" };
++        },
++        onArrival: () => {
++          if (!waypoint) return { kind: "completed" };
++          waypoint = null;
++          return { kind: "continue" };
++        },
+         ...(toolLoss && { stopSignal: toolLoss.signal }),
+         ...(toolLoss && { onToolSelected: toolLoss.select }),
+       });
+diff --git a/src/actions/nether-loadout.ts b/src/actions/nether-loadout.ts
+new file mode 100644
+index 0000000..a8f5ee1
+--- /dev/null
++++ b/src/actions/nether-loadout.ts
+@@ -0,0 +1,53 @@
++import type { Bot } from "mineflayer";
++import { carriedCount } from "../world/inventory-count.js";
++import { scaffoldBlockNames } from "../navigation/mineflayer/movement-policy.js";
++import { equipmentSlots } from "./equip/equip.js";
++import type { EquipmentDestination } from "./equip/contract.js";
++
++export interface LoadoutTarget {
++  readonly item_name: string;
++  readonly count?: number;
++  readonly destination?: EquipmentDestination;
++}
++
++// Count the shield in the off-hand separately from the carried spare.
++export const netherLoadoutTargets: readonly LoadoutTarget[] = [
++  { item_name: "diamond_helmet", destination: "head" },
++  { item_name: "diamond_chestplate", destination: "torso" },
++  { item_name: "diamond_leggings", destination: "legs" },
++  { item_name: "diamond_boots", destination: "feet" },
++  { item_name: "shield", destination: "off-hand" },
++  { item_name: "shield", count: 1 },
++  { item_name: "diamond_pickaxe", count: 2 },
++  { item_name: "diamond_sword", count: 1 },
++  { item_name: "bow", count: 1 },
++  { item_name: "arrow", count: 48 },
++  { item_name: "golden_apple", count: 2 },
++  { item_name: "cooked_beef", count: 32 },
++  { item_name: "golden_boots", count: 1 },
++  { item_name: "cobblestone", count: 64 },
++];
++
++export function loadoutItemLabel(name: string): string {
++  if (name === "cooked_beef") return "cooked food";
++  if (name === "cobblestone") return "scaffold blocks";
++  return name;
++}
++
++export const expeditionFood = ["cooked_beef", "cooked_porkchop", "cooked_chicken", "cooked_mutton", "cooked_rabbit", "baked_potato"];
++
++export function netherLoadout(bot: Bot) {
++  const worn = equipmentSlots(bot);
++  return netherLoadoutTargets.map(({ item_name: item, count: requested = 1, destination }) => ({
++    item,
++    requested,
++    destination,
++    present: destination
++      ? Number(worn[destination === "off-hand" ? "offHand" : destination] === item)
++      : item === "cooked_beef"
++        ? expeditionFood.reduce((total, name) => total + carriedCount(bot, name), 0)
++        : item === "cobblestone"
++          ? scaffoldBlockNames(bot).reduce((total, name) => total + carriedCount(bot, name), 0)
++          : carriedCount(bot, item),
++  }));
++}
+diff --git a/src/actions/portal-entry/contract.ts b/src/actions/portal-entry/contract.ts
+index 1cf4de6..b92b453 100644
+--- a/src/actions/portal-entry/contract.ts
++++ b/src/actions/portal-entry/contract.ts
+@@ -5,7 +5,7 @@ import { navigationEvidenceSchema } from "../navigate/contract.js";
+ export const ENTER_NETHER_PORTAL = "enter_nether_portal" as const;
+ export const ENTER_END_PORTAL = "enter_end_portal" as const;
+ export const ENTER_NETHER_PORTAL_DESCRIPTION =
+-  "Enter the active Nether portal block at x,y,z and wait for server-positioned arrival. From the Overworld this enters the Nether; from the Nether it returns to the Overworld. Entry checks food and arrows unless allow_low_supplies is true; return is exempt.";
++  "Enter the active Nether portal block at x,y,z and wait for server-positioned arrival. From the Overworld this enters the Nether; from the Nether it returns to the Overworld. Before outbound travel, use ensure_items with loadout=nether. The tool checks the expedition kit. Returning is exempt.";
+ export const ENTER_END_PORTAL_DESCRIPTION =
+   "Enter the active End portal block at x,y,z and wait for server-positioned arrival. Entering the End requires a personal respawn bed observed through this session's sleep action within respawn_within blocks (default 128), unless allow_distant_respawn is true. Returning from the End is exempt.";
+ 
+@@ -17,7 +17,7 @@ const coordinates = {
+ 
+ export const enterNetherPortalInputSchema = z.strictObject({
+   ...coordinates,
+-  allow_low_supplies: z.boolean().default(false).describe("Proceed despite carrying fewer than 16 usable food items or 32 regular arrows. Return to the Overworld is exempt."),
++  allow_low_supplies: z.boolean().default(false).describe("Compatibility flag. The Nether loadout is required for outbound travel. Returning is exempt."),
+ });
+ 
+ export const enterEndPortalInputSchema = z.strictObject({
+diff --git a/src/actions/portal-entry/portal-entry.test.ts b/src/actions/portal-entry/portal-entry.test.ts
+index a0da3bb..73a7ac7 100644
+--- a/src/actions/portal-entry/portal-entry.test.ts
++++ b/src/actions/portal-entry/portal-entry.test.ts
+@@ -44,6 +44,22 @@ function crossingBot() {
+   return { bot, controls };
+ }
+ 
++test("outbound Nether entry requires the complete loadout even with the old low-supplies flag", async () => {
++  const { bot } = crossingBot();
++  bot.blockAt = () => ({ name: "nether_portal" }) as never;
++  bot.getEquipmentDestSlot = () => 5;
++  bot.inventory.slots = [];
++  const lifetime = new AbortController();
++  try {
++    const result = await enterPortalAction(bot, parseNetherPortalRequest({ x: 0, y: 64, z: 0, allow_low_supplies: true }), {}, {
++      createMovements: () => ({}) as never,
++      navigate: async () => { throw new Error("The bot must not approach a portal with missing equipment."); },
++    }, lifetime.signal);
++    assert.equal(result.status, "failed");
++    assert.match("error" in result ? result.error : "", /NETHER_LOADOUT.*diamond_pickaxe 0\/2.*arrow 0\/48.*golden_apple 0\/2/);
++  } finally { lifetime.abort(); }
++});
++
+ test("portal action accepts only a server-positioned destination and releases observation with its lifetime", async () => {
+   const { bot } = crossingBot();
+   const lifetime = new AbortController();
+diff --git a/src/actions/portal-entry/portal-entry.ts b/src/actions/portal-entry/portal-entry.ts
+index 246b720..c0c92b4 100644
+--- a/src/actions/portal-entry/portal-entry.ts
++++ b/src/actions/portal-entry/portal-entry.ts
+@@ -32,6 +32,7 @@ import {
+   type PortalEntryResult,
+ } from "./contract.js";
+ import { personalRespawnObservation } from "./respawn-knowledge.js";
++import { loadoutItemLabel, netherLoadout } from "../nether-loadout.js";
+ import { portalSupplyWarning, type PortalDestination } from "./portal-policy.js";
+ 
+ export interface PortalEntryDependencies {
+@@ -110,7 +111,7 @@ export function beginPortalEntry(
+   const start = position(bot.entity.position);
+   const startDimension = bot.game.dimension;
+   const destination = destinationFor(request.kind, startDimension);
+-  const cell = new Vec3(request.x, request.y, request.z);
++  let cell = new Vec3(request.x, request.y, request.z);
+   const block = portalBlock(request.kind);
+   let positionedDimension = startDimension;
+   let died = false;
+@@ -118,7 +119,7 @@ export function beginPortalEntry(
+   const toolLoss = observeToolTierLoss(bot);
+   const bucketBefore = bucketDropTotals(bot);
+   const scaffoldBefore = new Map(scaffoldBlockNames(bot).map((item) => [item, bot.inventory.count(bot.registry.itemsByName[item]?.id ?? -1, null)]));
+-  const receipt = () => evidence(bot, request, start, startDimension, elapsedMs, scaffoldBefore, bucketBefore);
++  const receipt = () => evidence(bot, { ...request, ...position(cell) }, start, startDimension, elapsedMs, scaffoldBefore, bucketBefore);
+   observe(() => ({
+     baseline: { dimension: startDimension, position: { ...start } },
+     checkpoint: { destination: { ...position(cell) }, remainingDistance: bot.game.dimension === startDimension ? bot.entity.position.distanceTo(cell) : null, dimension: bot.game.dimension, positionedDimension, died, portal: { block, cell: cell.toString() } },
+@@ -150,8 +151,22 @@ export function beginPortalEntry(
+         : { status: "failed", error: died ? "[PORTAL_DIED] The bot died during portal entry." : `[PORTAL_DIMENSION_CHANGED] Expected ${destination}; observed ${bot.game.dimension}.`, navigation: receipt() };
+     }
+     const observedBlock = bot.blockAt(cell);
+-    if (observedBlock && observedBlock.name !== block) return { status: "failed", error: `[PORTAL_TARGET] Expected active ${block} at ${cell}; observed ${observedBlock.name}.`, navigation: receipt() };
+-    const problem = endRespawnProblem(bot, request, destination) ?? (!request.allowLowSupplies ? portalSupplyWarning(bot, destination) : null);
++    if (observedBlock && observedBlock.name !== block) {
++      // A remembered cell may be off by one or no longer active. Only accept
++      // an observed opening immediately around that point.
++      const nearby = request.kind === "nether" ? bot.findBlock?.({ point: cell, maxDistance: 4, matching: (candidate) => candidate.name === block }) : null;
++      if (!nearby) return { status: "failed", error: `[PORTAL_TARGET] Expected active ${block} at ${cell}; observed ${observedBlock.name}.`, navigation: receipt() };
++      cell = nearby.position.clone();
++    }
++    const missingKit = destination === "the_nether"
++      ? netherLoadout(bot).filter(({ present, requested }) => present < requested)
++      : [];
++    const kitProblem = missingKit.length
++      ? `[NETHER_LOADOUT] Call ensure_items with loadout=nether. Missing: ${missingKit.map(({ item, requested, present, destination: slot }) =>
++        `${loadoutItemLabel(item)}${slot ? ` (${slot})` : ""} ${present}/${requested}`).join(", ")}.`
++      : null;
++    const problem = kitProblem ?? endRespawnProblem(bot, request, destination) ??
++      (destination !== "the_nether" && !request.allowLowSupplies ? portalSupplyWarning(bot, destination) : null);
+     if (problem) return { status: "failed", error: problem, navigation: receipt() };
+     if (bot.blockAt(bot.entity.position.floored())?.name === block) return { status: "failed", error: `[PORTAL_ALREADY_INSIDE] The bot already occupies this ${block} after a recent arrival. Leave the portal opening and retry after the native portal cooldown; waiting inside can keep refreshing the cooldown.`, navigation: receipt() };
+ 
+diff --git a/src/navigation/mineflayer/movement-policy.ts b/src/navigation/mineflayer/movement-policy.ts
+index cf5aec3..3944acb 100644
+--- a/src/navigation/mineflayer/movement-policy.ts
++++ b/src/navigation/mineflayer/movement-policy.ts
+@@ -78,6 +78,7 @@ export interface MineflayerMovementPolicyOptions {
+   readonly allowDigging?: boolean;
+   readonly maximumDrop?: number;
+   readonly allowParkour?: boolean;
++  readonly avoidExposedGapJumps?: boolean;
+   readonly allowDiagonalAscend?: boolean;
+   readonly allowDoors?: boolean;
+   /** Whether this block and cell are explicitly targeted for removal by the calling task. */
+@@ -420,6 +421,7 @@ export function createMineflayerMovementPolicy(
+     allowPlacing: scaffolding,
+     allowDoors,
+     allowParkour,
++    avoidExposedGapJumps: options.avoidExposedGapJumps,
+     allowDiagonalAscend: options.allowDiagonalAscend ?? true,
+     allowSprinting: options.allowSprinting ?? true,
+     maximumDrop: options.maximumDrop ?? DEFAULT_MAXIMUM_DROP,
+diff --git a/src/navigation/movements/catalogue.test.ts b/src/navigation/movements/catalogue.test.ts
+index f70214b..ac8c617 100644
+--- a/src/navigation/movements/catalogue.test.ts
++++ b/src/navigation/movements/catalogue.test.ts
+@@ -48,6 +48,31 @@ const breaksAt = (movement: GeneratedMovement, x: number, y: number) =>
+ const SOLID = { stateId: 1 } as const;
+ const AIR = { stateId: 0 } as const;
+ 
++test("uphill parkour includes landing headroom in its clearance operations", () => {
++  const world = runway([-2, 5], (x) => x === 1 || x === 2);
++  for (const y of [63, 64, 65, 66]) world.load({ x: 3, y, z: 0 }, SOLID);
++  world.load({ x: 3, y: 67, z: 0 }, AIR);
++  const crossing = generateFrom(world, ORIGIN).find(
++    ({ step }) => step.kind === "parkour" && step.to.x === 3 && step.to.y === 64 && step.to.z === 0,
++  );
++  assert.ok(crossing, "the jump is feasible if its landing headroom is cleared");
++  assert.ok(breaksAt(crossing, 3, 66), "clear the block intersected by the rising jump arc");
++});
++
++test("a strict gap policy uses a bridge when a missed jump would land in lava", () => {
++  const world = runway([-2, 5], (x) => x === 1 || x === 2);
++  world.load({ x: 1, y: 61, z: 0 }, LAVA);
++  world.load({ x: 2, y: 61, z: 0 }, LAVA);
++  const normal = generateFrom(world, ORIGIN);
++  assert.ok(normal.some(({ step }) => step.kind === "sprint_jump" && step.to.x === 3));
++  const safe = generateFrom(world, ORIGIN, {
++    scaffolds: 4,
++    policy: { avoidExposedGapJumps: true, scaffold: { itemType: 1, stateId: 1 } },
++  });
++  assert.equal(safe.some(({ step }) => step.kind === "sprint_jump" && step.to.x === 3), false);
++  assert.ok(safe.some(({ step }) => step.to.x === 1 && step.operations.some(({ kind }) => kind === "place")));
++});
++
+ test("transition hazards can refuse a jump without excluding level walking or changing other routes", () => {
+   const world = flat([{ x: 1, y: 63, z: 0 }, SOLID]);
+   const baseline = generateFrom(world, ORIGIN);
+diff --git a/src/navigation/movements/catalogue.ts b/src/navigation/movements/catalogue.ts
+index baaf035..c0b83fb 100644
+--- a/src/navigation/movements/catalogue.ts
++++ b/src/navigation/movements/catalogue.ts
+@@ -654,7 +654,8 @@ function gapJump(
+   if (isClimbable(landingSupport)) return;
+   // Landing one block up also needs the cell above the landing head clear: the
+   // arc peaks over the landing, not at it.
+-  if (rise > 0 && prepareHeadCell(x, y + 2, z, context) === NO_CELL) return;
++  const landingCeiling = rise > 0 ? prepareHeadCell(x, y + 2, z, context) : null;
++  if (landingCeiling === NO_CELL) return;
+   let crossesGap = false;
+   for (let index = 1; index < distance; index += 1) {
+     const midX = from.x + dx * index;
+@@ -667,15 +668,20 @@ function gapJump(
+     if (!isPassable(look(context, midX, y + 2, midZ))) return;
+     if (rise === 0 && !isPassable(look(context, midX, from.y + 3, midZ))) return;
+     if (!isSolid(look(context, midX, y - 1, midZ))) crossesGap = true;
++    // A missed gap jump must have a survivable fallback below its flight.
++    for (let below = from.y - 1; context.policy.avoidExposedGapJumps && below >= from.y - context.policy.maximumDrop - 1; below--) {
++      const fallback = look(context, midX, below, midZ);
++      if (fallback.kind === "unloaded" || fallback.traits.damaging || fallback.traits.liquid === "lava") return;
++      if (isSafeSupport(fallback) || isWater(fallback)) break;
++      if (below === from.y - context.policy.maximumDrop - 1) return;
++    }
+     // The lip of an ascending jump must not be in the way at the old height.
+     if (rise > 0 && !isPassable(look(context, midX, y - 1, midZ))) return;
+   }
+   if (!crossesGap) return;
+-  out
+-    .open(kind, x, y, z)
+-    .cell(feet)
+-    .cell(head)
+-    .cell(takeoffHead)
++  const candidate = out.open(kind, x, y, z).cell(feet).cell(head).cell(takeoffHead);
++  if (landingCeiling !== null) candidate.cell(landingCeiling);
++  candidate
+     // A sprint jump carries past its planned cell, like a drop does, so it
+     // needs the same arrival set or every long jump costs a replan.
+     .overshoot(dx, dz)
+diff --git a/src/navigation/movements/policy.ts b/src/navigation/movements/policy.ts
+index 3ef7c93..947edd5 100644
+--- a/src/navigation/movements/policy.ts
++++ b/src/navigation/movements/policy.ts
+@@ -67,6 +67,7 @@ export interface MovementPolicy {
+   readonly allowSwimming: boolean;
+   readonly allowClimbing: boolean;
+   readonly allowParkour: boolean;
++  readonly avoidExposedGapJumps?: boolean;
+   readonly allowDiagonalAscend: boolean;
+   readonly allowSprinting: boolean;
+   readonly allowDownward: boolean;
+diff --git a/src/navigation/orchestration/navigation-run.ts b/src/navigation/orchestration/navigation-run.ts
+index a4d1909..f13006f 100644
+--- a/src/navigation/orchestration/navigation-run.ts
++++ b/src/navigation/orchestration/navigation-run.ts
+@@ -1035,6 +1035,7 @@ export class NavigationRun {
+       signal: this.context.signal,
+     });
+     this.#events.emit({ kind: "calculation_failed", failure: failure.kind, result: result.kind });
++    if (result.kind === "stop") return { kind: "outcome", outcome: this.#failed(failure) };
+     if (this.context.signal.aborted) return { kind: "outcome", outcome: this.#stopped() };
+     return result.kind === "continue"
+       ? { kind: "retry", reason: "calculation_failure" }
+diff --git a/src/navigation/orchestration/process-events.ts b/src/navigation/orchestration/process-events.ts
+index b481e51..6c90fee 100644
+--- a/src/navigation/orchestration/process-events.ts
++++ b/src/navigation/orchestration/process-events.ts
+@@ -30,7 +30,7 @@ export interface NavigationCalculationFailureEvent {
+   readonly signal: AbortSignal;
+ }
+ 
+-export type NavigationCalculationFailureResult = { readonly kind: "completed" } | { readonly kind: "continue" };
++export type NavigationCalculationFailureResult = { readonly kind: "completed" | "continue" | "stop" };
+ 
+ /** The one sentence every caller reports for a failed calculation: what ran out, how close it got, and what it was replanning around. */
+ export function describeCalculationFailure(failure: NavigationCalculationFailure): string {
+diff --git a/src/navigation/telemetry/index.ts b/src/navigation/telemetry/index.ts
+index a3ad1dc..6457fd5 100644
+--- a/src/navigation/telemetry/index.ts
++++ b/src/navigation/telemetry/index.ts
+@@ -110,7 +110,7 @@ export type NavigationEvent =
+       readonly kind: "calculation_failed";
+       readonly runId: string;
+       readonly failure: NavigationCalculationFailure["kind"];
+-      readonly result: "completed" | "continue";
++      readonly result: "completed" | "continue" | "stop";
+       readonly atMs: number;
+     }
+   | { readonly kind: "cleanup_completed"; readonly runId: string; readonly atMs: number }
+diff --git a/src/runtime/minecraft-runtime.test.ts b/src/runtime/minecraft-runtime.test.ts
+index 0a71bb4..8d65538 100644
+--- a/src/runtime/minecraft-runtime.test.ts
++++ b/src/runtime/minecraft-runtime.test.ts
+@@ -366,6 +366,7 @@ test("the Minecraft runtime owns frontier attachment and its action catalog", as
+       "send_message",
+       "sleep",
+       "smelt_item",
++      "ensure_items",
+       "use_bucket",
+       "use_container",
+       "view_blocks",
+diff --git a/src/runtime/minecraft-runtime.ts b/src/runtime/minecraft-runtime.ts
+index 29695f0..5e46261 100644
+--- a/src/runtime/minecraft-runtime.ts
++++ b/src/runtime/minecraft-runtime.ts
+@@ -1,3 +1,4 @@
++import { inventoryCounts } from "../actions/collect-block/collection-facts.js";
+ import type { BlockHighlighter } from "@aibengineering/minecraft-block-highlighter";
+ import type { Bot } from "mineflayer";
+ import { randomUUID } from "node:crypto";
+@@ -198,7 +199,9 @@ class AttachedMinecraftRuntime implements MinecraftRuntime {
+         survival: { ...status, request: output.request ?? status.request },
+       };
+     };
+-    this.asyncActions = new AsyncActions(runner, this.run, new ExecutionStore(botData, bot.username));
++    this.asyncActions = new AsyncActions(runner, this.run, new ExecutionStore(botData, bot.username), () => ({
++      freeSlots: bot.inventory.emptySlotCount(), counts: inventoryCounts(bot),
++    }));
+   }
+ 
+   readRequestIncidents(requestId: number): IncidentReference[] {
+diff --git a/src/server/async-tools.test.ts b/src/server/async-tools.test.ts
+index 1a33f8d..f1a6c0a 100644
+--- a/src/server/async-tools.test.ts
++++ b/src/server/async-tools.test.ts
+@@ -20,7 +20,10 @@ test("MCP accepts immediately, retains work across client reconnect, and deliver
+     execution: { kind: "task" }, parse: () => ({}),
+     execute: async () => { await done; return { status: "succeeded", collected: 3 }; },
+   });
+-  const service = new AsyncActions(runner, runner.run);
++  let collected = 0;
++  const service = new AsyncActions(runner, runner.run, undefined, () => ({
++    counts: { iron_ingot: collected }, freeSlots: collected ? 35 : 36,
++  }));
+   const statusAction = defineAction({
+     name: "view_status", description: "Test status", inputSchema: z.object({}),
+     resultSchema: actionResultSchema({}), formatResult: () => "Bot is connected.",
+@@ -89,6 +92,7 @@ test("MCP accepts immediately, retains work across client reconnect, and deliver
+   assert.match(statusText, /Foreground action/);
+   assert.match(statusText, new RegExp(accepted.actionId));
+   assert.deepEqual(Object.keys(statusMarkdown.structuredContent!), ["response"], "Markdown must not carry duplicate raw progress");
++  collected = 3;
+   release();
+   await service.settled();
+   const refused = await reconnected.callTool({ name: action.name, arguments: { submission_id: "two", rationale: "Check the result retrieval gate" } });
+@@ -99,11 +103,15 @@ test("MCP accepts immediately, retains work across client reconnect, and deliver
+   const final = (finalReply.structuredContent as { response: { data: { state: string; output: { result: { collected: number } } } } }).response.data;
+   assert.equal(final.state, "settled");
+   assert.equal(final.output.result.collected, 3);
++  assert.deepEqual((final as { inventoryChange?: unknown }).inventoryChange,
++    { changed: { iron_ingot: 3 }, freeSlots: 35 });
+   assert.equal((final as { survival?: SurvivalStatus }).survival?.summary, "responding", "a settled result carries the survival status observed at retrieval");
+   const second = await reconnected.callTool({ name: action.name, arguments: { submission_id: "two", rationale: "Continue after reviewing result", response_format: "json" } });
+   assert.equal((second.structuredContent as { response: { data: { state: string } } }).response.data.state, "accepted");
++  collected = 25;
+   const markdown = await reconnected.callTool({ name: "wait_for_action", arguments: { action_id: accepted.actionId, timeout_ms: 0, rationale: "Inspect complete formatted evidence" } });
+   assert.match(JSON.stringify(markdown.content), /Collected 3/);
++  assert.match(JSON.stringify(markdown.content), /Inventory changes: iron_ingot \+3/);
+   assert.doesNotMatch(JSON.stringify(markdown.content), /Receipt:/);
+   assert.equal("receipt" in final, false);
+   assert.equal((markdown.structuredContent as { response: { markdown: string } }).response.markdown.match(/## Notifications/g)?.length, 1);
+diff --git a/src/server/async-tools.ts b/src/server/async-tools.ts
+index 0d9018c..f2e03eb 100644
+--- a/src/server/async-tools.ts
++++ b/src/server/async-tools.ts
+@@ -25,6 +25,11 @@ const metaSchema = z.object({
+   rationale: z.string().trim().min(1).max(200),
+   response_format: z.enum(["markdown", "json"]).default("markdown"),
+ });
++const inventoryChangeSchema = z.strictObject({
++  freeSlots: z.number().int().nonnegative(),
++  changed: z.record(z.string(), z.number().int()),
++});
++
+ interface Runtime {
+   actions: readonly Action[];
+   asyncActions: AsyncActions;
+@@ -60,7 +65,7 @@ export function registerAsyncTools(server: McpServer, runtime: Runtime, render:
+           checkpointDelta: z.record(z.string(), z.number()), toolChanges: z.array(toolChangeSchema) }),
+       }),
+       z.strictObject({ state: z.literal("settled"), wakeReason: z.literal("settled"), actionId: z.string(), output,
+-        survival: survivalStatusSchema.optional() }),
++        survival: survivalStatusSchema.optional(), inventoryChange: inventoryChangeSchema.optional() }),
+       z.strictObject({ state: z.literal("storage_failed"), actionId: z.string(), error: z.string(), output }),
+     ]);
+   }
+@@ -109,13 +114,19 @@ export function registerAsyncTools(server: McpServer, runtime: Runtime, render:
+       const markdown = result && action
+         ? `Action ID: ${data.actionId}\n${data.error ? `Storage error: ${data.error}\n` : ""}\n${render(action, result)}${policyReminder ? `\n\n${policyReminder}` : ""}`
+         : formatProtocol(data as Parameters<typeof formatProtocol>[0]);
++      const inventoryChange = data.inventoryChange as z.output<typeof inventoryChangeSchema> | undefined;
++      const changes = Object.entries(inventoryChange?.changed ?? {})
++        .map(([name, count]) => `${name} ${count > 0 ? "+" : ""}${count}`);
++      const inventory = inventoryChange
++        ? `\n\nInventory changes: ${changes.join(", ") || "none"}. Free slots: ${inventoryChange.freeSlots}.`
++        : "";
+       const notificationNotice = formatNotifications(notifications);
+       const notice = notificationNotice ? `\n\n${notificationNotice}` : "";
+       const reply = response_format === "json"
+         ? { content: isError ? [{ type: "text" as const, text: String(data.error ?? (result && "error" in result.result ? result.result.error : "Action failed")) }] : [],
+           structuredContent: { response: { format: "json" as const, data }, notifications }, isError }
+-        : { content: [{ type: "text" as const, text: markdown + notice }],
+-          structuredContent: { response: { format: "markdown" as const, markdown: markdown + notice } }, isError };
++        : { content: [{ type: "text" as const, text: markdown + inventory + notice }],
++          structuredContent: { response: { format: "markdown" as const, markdown: markdown + inventory + notice } }, isError };
+       try {
+         runtime.recordActionResponse({ requestId, respondedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - started),
+           status: (result?.result.status ?? (data.state === "settled" ? "succeeded" : data.state)) as ActionCallStatus,
+diff --git a/src/session/async-actions.ts b/src/session/async-actions.ts
+index e41ba79..45cc73d 100644
+--- a/src/session/async-actions.ts
++++ b/src/session/async-actions.ts
+@@ -27,11 +27,30 @@ export const acceptanceSchema = z.strictObject({
+ export type Refusal = z.output<typeof refusalSchema>;
+ export type Acceptance = z.output<typeof acceptanceSchema>;
+ export type LiveProgress = { actionId: string; action: string; progress: Progress; request: RequestSnapshot | null };
++export interface InventoryObservation {
++  readonly freeSlots: number;
++  readonly counts: Readonly<Record<string, number>>;
++}
++
++interface InventoryChange {
++  readonly freeSlots: number;
++  readonly changed: Readonly<Record<string, number>>;
++}
++
++function inventoryChange(before: InventoryObservation, after: InventoryObservation): InventoryChange {
++  const items = new Set([...Object.keys(before.counts), ...Object.keys(after.counts)]);
++  const changed = [...items].flatMap((item) => {
++    const delta = (after.counts[item] ?? 0) - (before.counts[item] ?? 0);
++    return delta ? [[item, delta] as const] : [];
++  });
++  return { freeSlots: after.freeSlots, changed: Object.fromEntries(changed) };
++}
++
+ export type WaitOutcome = Refusal | {
+   state: "pending"; wakeReason: "timeout"; actionId: string;
+   progress: LiveProgress; duringWait: ReturnType<typeof progressChange>;
+ } | {
+-  state: "settled"; wakeReason: "settled"; actionId: string; output: ActionOutput<string, import("../actions/action.js").ActionResult>;
++  state: "settled"; wakeReason: "settled"; actionId: string; inventoryChange?: InventoryChange; output: ActionOutput<string, import("../actions/action.js").ActionResult>;
+ } | { state: "storage_failed"; actionId: string; error: string; output: ActionOutput<string, import("../actions/action.js").ActionResult> };
+ 
+ type Output = ActionOutput<string, import("../actions/action.js").ActionResult>;
+@@ -46,7 +65,7 @@ interface RecordData {
+   rationale: string | null;
+   resultRetrieved: boolean;
+   checkpoint: LiveProgress | null;
+-  terminal: { output: Output } | null;
++  terminal: { output: Output; inventoryChange?: InventoryChange } | null;
+ }
+ interface Execution {
+   record: RecordData;
+@@ -75,7 +94,7 @@ export class ExecutionStore {
+         // Earlier development records used a caller acknowledgement and receipt.
+         const { acknowledged, terminal, ...record } = JSON.parse(String(row.record_json));
+         return { ...record, resultRetrieved: record.resultRetrieved ?? acknowledged ?? false,
+-          terminal: terminal ? { output: terminal.output } : null } as RecordData;
++          terminal: terminal ? { output: terminal.output, ...(terminal.inventoryChange && { inventoryChange: terminal.inventoryChange }) } : null } as RecordData;
+       });
+   }
+   write(records: readonly RecordData[]): void {
+@@ -98,6 +117,7 @@ export class AsyncActions {
+     readonly runner: ActionRunner,
+     private readonly run: ActionRunner["run"],
+     private readonly store?: Pick<ExecutionStore, "load" | "write">,
++    private readonly observeInventory?: () => InventoryObservation,
+   ) {
+     for (const record of store?.load() ?? []) {
+       if (!record.terminal) {
+@@ -152,6 +172,7 @@ export class AsyncActions {
+     this.#records.set(record.actionId, admitted);
+     this.#submissions.set(record.submissionId, admitted);
+     this.#active = admitted;
++    const inventoryBefore = this.#inventorySnapshot();
+     const executionStartedAt = performance.now();
+     // Calling run synchronously reserves the physical runner before another admission can interleave.
+     const outcome = this.run(action, input, undefined, requestId, record.actionId);
+@@ -176,7 +197,11 @@ export class AsyncActions {
+       clearTimeout(deadline);
+       if (this.#checkpointTimer) clearInterval(this.#checkpointTimer);
+       this.#checkpointTimer = null;
+-      record.terminal = { output: structuredClone(output) };
++      const inventoryAfter = this.#inventorySnapshot();
++      record.terminal = {
++        output: structuredClone(output),
++        ...(inventoryBefore && inventoryAfter && { inventoryChange: inventoryChange(inventoryBefore, inventoryAfter) }),
++      };
+       admitted.dirty = true;
+       this.#persist(admitted);
+       this.#active = null;
+@@ -218,7 +243,7 @@ export class AsyncActions {
+         retained.record.resultRetrieved = true;
+         retained.persistenceError = null;
+       }
+-      return { state: "settled", wakeReason: "settled", actionId, output: structuredClone(terminal.output) };
++      return { state: "settled", wakeReason: "settled", actionId, ...structuredClone(terminal) };
+     }
+     const after = this.#live(retained);
+     if (!before || !after) return refused("PROGRESS_UNAVAILABLE", "Execution is admitted but its initial progress snapshot is unavailable.");
+@@ -246,6 +271,11 @@ export class AsyncActions {
+ 
+   async settled(): Promise<void> { await this.#active?.settled; }
+ 
++  #inventorySnapshot(): InventoryObservation | undefined {
++    try { return this.observeInventory?.(); }
++    catch { return undefined; } // An unavailable inventory receipt cannot strand the result gate.
++  }
++
+   #acceptance(record: RecordData): Acceptance {
+     return { state: "accepted", actionId: record.actionId, action: record.action, admittedAt: record.admittedAt };
+   }
