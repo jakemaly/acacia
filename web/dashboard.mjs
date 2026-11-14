@@ -170,8 +170,14 @@ function renderStatus() {
   const progress = pending && activity.findLast(event => event.type === 'action_progress' && event.id === pending.id);
   const label = pending ? title(toolLabel(pending.tool)) : activity.at(-1)?.type === 'continuation' ? 'Continuing the run' : 'Thinking';
   const movement = isNumber(progress?.remainingDistance) ? `${Math.round(progress.remainingDistance)} blocks left` : '';
-  const collection = isNumber(progress?.gained) && isNumber(progress?.requested) ? `${progress.gained}/${progress.requested} collected` : '';
-  const detail = progress?.state === 'suspended' ? 'Recovering' : movement || collection;
+  const objectives = pending?.tool.endsWith('__ensure_items');
+  const collection = isNumber(progress?.gained) && isNumber(progress?.requested)
+    ? `${progress.gained}/${progress.requested} ${objectives ? 'ready' : 'collected'}` : '';
+  const cooking = isNumber(progress?.furnaceOutput) && isNumber(progress?.requested) ? `${progress.furnaceOutput}/${progress.requested} cooked` : '';
+  const construction = isNumber(progress?.correct) && isNumber(progress?.requested) ? `${progress.correct}/${progress.requested} blocks ready` : '';
+  const detail = progress?.state === 'suspended' ? 'Recovering'
+    : objectives && progress?.phase ? [title(toolLabel(progress.phase)), collection].filter(Boolean).join(' · ')
+    : movement || collection || cooking || construction;
   setAgent(run.state === 'running' ? pending ? pending.tool.endsWith('__navigate') ? 'walking' : 'acting' : 'thinking' : 'idle',
     detail ? `${label} · ${detail}` : label);
   renderDecision(run.decision);

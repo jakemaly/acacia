@@ -11,7 +11,7 @@ import { gameTools, gameArguments, statusContent } from '../src/game-tools.mjs';
 const overflow = 'Your input exceeds the context window of this model. Please adjust your input and try again.';
 const checkpoint = 'Defeat the dragon. Acacia is at a Nether fortress. Retrieve the pending action before moving.';
 
-test('construction and storage expose separate argument sets', () => {
+test('construction, storage and furnace modes expose separate argument sets', () => {
   const definition = (name, fields, required) => ({
     name, inputSchema: { type: 'object', additionalProperties: false,
       properties: Object.fromEntries(fields.map(field => [field, {}])), required },
@@ -22,6 +22,8 @@ test('construction and storage expose separate argument sets', () => {
     definition('view_status', ['response_format'], []),
     definition('view_blocks', ['find', 'cells'], []),
     definition('collect_block', ['block_name', 'count', 'x', 'y', 'z', 'rationale'], ['block_name', 'rationale']),
+    definition('smelt_item', ['item_name', 'count', 'fuel_item_name', 'temporary_workstation', 'x', 'y', 'z', 'rationale',
+      'submission_id', 'wait_timeout_ms', 'response_format'], ['item_name', 'count', 'fuel_item_name', 'rationale', 'submission_id']),
   ]);
   const find = name => tools.find(tool => tool.name === name);
   assert.deepEqual(Object.keys(find('build_structure').inputSchema.properties), ['blocks', 'rationale']);
@@ -43,6 +45,14 @@ test('construction and storage expose separate argument sets', () => {
   assert.deepEqual(find('collect_exact_block').inputSchema.required, ['block_name', 'rationale', 'x', 'y', 'z']);
   assert.equal(find('collect_exact_block').inputSchema.properties.count, undefined);
   assert.equal(find('collect_exact_block').target, 'collect_block');
+  const carriedFurnace = find('smelt_item');
+  const existingFurnace = find('smelt_at_furnace');
+  assert.deepEqual(Object.keys(carriedFurnace.inputSchema.properties), ['item_name', 'count', 'fuel_item_name', 'rationale']);
+  assert.deepEqual(existingFurnace.inputSchema.required, ['item_name', 'count', 'fuel_item_name', 'rationale', 'x', 'y', 'z']);
+  const smelt = { item_name: 'raw_iron', count: 16, fuel_item_name: 'coal' };
+  assert.deepEqual(gameArguments(carriedFurnace, smelt), { ...smelt, temporary_workstation: true });
+  assert.deepEqual(gameArguments(existingFurnace, { ...smelt, x: -3, y: 70, z: 9 }),
+    { ...smelt, temporary_workstation: false, x: -3, y: 70, z: 9 });
 });
 
 test('compact status keeps actionable facts and foreground IDs', () => {
@@ -70,12 +80,14 @@ test('compact status keeps actionable facts and foreground IDs', () => {
   assert.doesNotMatch(block.text, /remote_example/);
 });
 
-for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admission', 'dropped SSE admission']) {
+for (const reason of ['threshold', 'overflow', 'productive wait', 'foreground contract', 'dropped admission', 'dropped SSE admission']) {
   const batch = reason === 'productive wait';
   const dropped = reason.includes('dropped');
-  const monitored = batch || dropped;
-  const action = batch ? 'collect_block' : 'navigate';
+  const foreground = reason === 'foreground contract';
+  const monitored = batch || dropped || foreground;
+  const action = foreground ? 'smelt_item' : batch ? 'collect_block' : 'navigate';
   test(batch ? 'Pi waits through a productive collection and hands back the final receipt'
+    : foreground ? 'Pi finishes a foreground tool from its catalogue contract without model wait arguments'
     : dropped ? `Pi replays an identical submission after ${reason}`
     : `Pi continues a pending Minecraft action after ${reason} compaction`, { timeout: 10_000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'mine-pi-'));
@@ -90,8 +102,12 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
       if (id === undefined) return response.writeHead(202).end();
       let result;
       if (method === 'initialize') result = { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } };
-      if (method === 'tools/list') result = { tools: [action, 'wait_for_action',
-        ...Array.from({ length: 35 }, (_, i) => `fixture_${i}`)].map(name => ({ name, inputSchema: { type: 'object' } })) };
+      if (method === 'tools/list') result = { tools: [action, 'wait_for_action', 'cancel_foreground_action',
+        'view_status', 'fixture_0'].map(name => ({
+          name, inputSchema: monitored && name === action ? { type: 'object', properties: {
+            submission_id: { type: 'string' }, wait_timeout_ms: { type: 'integer' }, response_format: { type: 'string' },
+          }, required: ['submission_id'] } : { type: 'object' },
+        })) };
       if (method === 'tools/call') {
         calls.push(params.name);
         const reports = {
@@ -106,7 +122,7 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
           if (params.name === action) {
             assert.equal(format, 'json');
             assert.equal(args.wait_timeout_ms, undefined);
-            assert.equal(args.submission_id, 'fixture-submission');
+            assert.ok(args.submission_id);
             if (submitted) assert.deepEqual(args, submitted);
             else {
               submitted = args;
@@ -120,8 +136,8 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
           const pending = { state: 'pending', actionId: '1234-abcd', progress: { progress: { state: 'running' } },
             vitalsDuringWait: { healthBefore: 20, healthAfter: 20 }, duringWait: { checkpointDelta: { gained: 4 } } };
           const settled = { state: 'settled', actionId: '1234-abcd', output: { action } };
-          const markdown = `Action ID: 1234-abcd\n\n## \`${action}\`\n${batch ? 'Inventory gained: 8' : 'Navigation completed.'}`;
-          const data = params.name === action ? accepted : calls.length === 2 && batch ? pending : settled;
+          const markdown = `Action ID: 1234-abcd\n\n## \`${action}\`\n${foreground ? 'Smelted 16 iron.' : batch ? 'Inventory gained: 8' : 'Navigation completed.'}`;
+          const data = params.name === action ? accepted : calls.length === 2 && (batch || foreground) ? pending : settled;
           result = format === 'json' ? { content: [], structuredContent: { response: { format, data } } } :
             { content: [{ type: 'text', text: markdown }], structuredContent: { response: { format, markdown } } };
         }
@@ -172,7 +188,7 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
         const transcript = JSON.stringify(context.messages);
         if (monitored) {
           assert.equal(++gameTurns, 1);
-          return reply([tool(action, { ...(batch ? { count: 8 } : {}),
+          return reply([tool(action, foreground ? {} : { ...(batch ? { count: 8 } : {}),
             wait_timeout_ms: dropped ? 20_000 : 2000, submission_id: 'fixture-submission' })], 'toolUse');
         }
         if (transcript.includes('<conversation>') || transcript.includes('# Conversation\\n')) {
@@ -188,7 +204,7 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
     };
     const events = [];
     await assert.rejects(play({ directory, socket, agentDir: directory, signal: signal.signal, inference,
-      actionWaitMs: batch ? 500 : undefined,
+      collectContext: foreground,
       promptText: 'Defeat the dragon.',
       record(type, payload) {
         events.push({ type, ...payload });
@@ -200,11 +216,19 @@ for (const reason of ['threshold', 'overflow', 'productive wait', 'dropped admis
     const transcript = (await readdir(directory)).find(name => name.endsWith('.jsonl'));
     const entries = (await readFile(join(directory, transcript), 'utf8')).trimEnd().split('\n').map(JSON.parse);
     if (monitored) {
+      if (foreground) {
+        const { tools } = JSON.parse(await readFile(join(directory, 'checkpoint-context.json'), 'utf8'));
+        const schema = tools.find(item => item.name === 'mcp__minecraft__smelt_item').parameters;
+        for (const key of ['submission_id', 'wait_timeout_ms', 'execution_timeout_ms', 'response_format']) {
+          assert.equal(schema.properties[key], undefined);
+        }
+      }
       assert.deepEqual(calls, dropped ? ['navigate', 'navigate', 'wait_for_action', 'wait_for_action'] :
-        ['collect_block', 'wait_for_action', 'wait_for_action', 'wait_for_action']);
+        [action, 'wait_for_action', 'wait_for_action', 'wait_for_action']);
       assert.equal(events.some(event => event.type === 'mcp_reconnected'), dropped);
       assert.equal(events.find(event => event.type === 'tool_execution_end')?.outcome, 'settled');
-      assert.ok(entries.some(entry => entry.message?.content?.[0]?.text?.includes(batch ? 'Inventory gained: 8' : 'Navigation completed.')));
+      assert.ok(entries.some(entry => entry.message?.content?.[0]?.text?.includes(
+        foreground ? 'Smelted 16 iron.' : batch ? 'Inventory gained: 8' : 'Navigation completed.')));
       return;
     }
     assert.deepEqual(calls, ['fixture_0', 'navigate', 'wait_for_action']);

@@ -14,7 +14,7 @@ import { defaultPrimitives, minePolicy, recordedDeath } from './primitives.mjs';
 
 const docker = promisify(execFile).bind(null, 'docker');
 const serverImage = 'eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817bbceb6b3be94109b4a784d46078099882dda';
-const mineImage = 'minecraft-mine-ai:de4fef3-primitives';
+const mineImage = 'minecraft-mine-ai:acacia-foreground';
 const revision = 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff';
 const jarHash = '4707d00eb834b446575d89a61a11b5d548d8c001';
 const bot = 'Acacia';
@@ -117,7 +117,12 @@ export function startRun(config) {
     const event = { time: new Date().toISOString(), type, ...payload };
     try {
       appendFileSync(join(directory, 'activity.jsonl'), `${JSON.stringify(event)}\n`, { mode: 0o600 });
-      if (type !== 'catalogue') run.activity = [...run.activity.slice(-79), event];
+      if (type === 'action_progress') {
+        // Preserve the active tool start even when a long objective spans many polls.
+        run.activity = [...run.activity.filter(previous => previous.type !== type || previous.id !== event.id).slice(-79), event];
+      } else if (type !== 'catalogue') {
+        run.activity = [...run.activity.slice(-79), event];
+      }
       if (payload.decision) run.decision = payload.decision;
     } catch (failure) {
       fail(new Error(`Could not record run activity: ${failure.message}`));
@@ -245,7 +250,7 @@ export function startRun(config) {
         forwards.push(await forward(config.host, config.gamePort, join(directory, 'game.sock'), config.allowed));
         signal.throwIfAborted();
         run.state = 'running';
-        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText, collectContext: Boolean(collector), actionWaitMs: hardcore ? profile.actionWaitMs : undefined, inference: config.inference });
+        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText, collectContext: Boolean(collector), inference: config.inference });
         const watchdog = async () => {
           let failures = 0;
           while (!signal.aborted) {

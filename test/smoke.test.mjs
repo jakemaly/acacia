@@ -38,7 +38,7 @@ export async function scriptedInference(agentDir, scenario) {
     const earlyReply = [{ type: 'text', text: 'I defeated the dragon.' }];
     let content = earlyReply;
     if (scenario === 'tool-interface') {
-      const work = { wait_timeout_ms: 30_000, rationale: 'Verify the fixture action.' };
+      const work = { rationale: 'Verify the fixture action.' };
       const next = [
         () => call('view_status', { rationale: 'Find the test location.' }),
         () => {
@@ -47,27 +47,26 @@ export async function scriptedInference(agentDir, scenario) {
           const position = lastResult.details.structuredContent.response.data.result.situation.position;
           const { x, y, z } = Object.fromEntries(['x', 'y', 'z'].map(axis => [axis, Math.floor(position[axis])]));
           return call('use_container', { ...work, x: x + 1, y, z, operation: 'deposit',
-            items: [{ item_name: 'cobblestone', count: 2 }], submission_id: 'transfer-fixture' });
+            items: [{ item_name: 'cobblestone', count: 2 }] });
         },
         () => {
           assert.equal(lastResult.isError, false, lastResult.content[0].text);
           const chest = messages.findLast(message => message.role === 'assistant' &&
             message.content.some(block => block.name === 'mcp__minecraft__use_container')).content[0].arguments;
           return call('use_container', { ...work, x: chest.x, y: chest.y, z: chest.z,
-            operation: 'inspect', submission_id: 'inspect-fixture' });
+            operation: 'inspect' });
         },
         () => {
           assert.match(lastResult.content[0].text, /cobblestone.*(?:2|two)/i);
           const chest = messages.findLast(message => message.role === 'assistant' &&
             message.content.some(block => block.name === 'mcp__minecraft__use_container')).content[0].arguments;
           return call('build_structure', { ...work,
-            blocks: [{ x: chest.x + 1, y: chest.y, z: chest.z, block_name: 'cobblestone' }],
-            submission_id: 'build-fixture' });
+            blocks: [{ x: chest.x + 1, y: chest.y, z: chest.z, block_name: 'cobblestone' }] });
         },
         () => {
           assert.equal(lastResult.isError, false, lastResult.content[0].text);
           return call('collect_block', { ...work, block_name: 'diamond_ore', count: 2,
-            scaffold: false, submission_id: 'collect-batch-fixture' });
+            scaffold: false });
         },
         () => {
           assert.equal(lastResult.isError, false, lastResult.content[0].text);
@@ -76,7 +75,7 @@ export async function scriptedInference(agentDir, scenario) {
             message.content.some(block => block.name === 'mcp__minecraft__build_structure')).content[0].arguments;
           const [{ x, y, z }] = build.blocks;
           return call('collect_exact_block', { ...work, x, y, z, block_name: 'cobblestone',
-            scaffold: false, submission_id: 'collect-exact-fixture' });
+            scaffold: false });
         },
         () => {
           assert.equal(lastResult.isError, false, lastResult.content[0].text);
@@ -94,20 +93,52 @@ export async function scriptedInference(agentDir, scenario) {
       if (next) content = [next()];
     }
     if (scenario === 'long-route') {
-      const work = { wait_timeout_ms: 45_000, rationale: 'Cross the fixture and verify the next action can run.' };
+      const work = { rationale: 'Cross the fixture and verify the next action can run.' };
       if (stage === 0) content = [call('view_status', { rationale: 'Get the fixture start position.' })];
       if (stage === 1) {
         const { x, y, z } = lastResult.details.structuredContent.response.data.result.situation.position;
         assert.equal(y, 150, 'the route must start on the fixture platform');
         content = [call('navigate', { ...work, x: Math.floor(x) + 96, y, z: Math.floor(z), range: 1,
-          dig: false, scaffold: false, submission_id: 'long-route' })];
+          dig: false, scaffold: false })];
       }
       if (stage === 2) {
         assert.equal(lastResult.isError, false, lastResult.content[0].text);
         assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
         assert.match(lastResult.content[0].text, /Final Pathfinder node is \*\*(?:0\.\d{2}|1\.00) blocks/);
         content = [call('raw_action', { operation: 'control', state: 'jump', ticks: 5,
-          submission_id: 'after-route', ...work })];
+          ...work })];
+      }
+    }
+    if (scenario === 'long-furnace' || scenario === 'long-hunt') {
+      const furnace = scenario === 'long-furnace';
+      const tool = furnace ? 'smelt_item' : 'collect_mob_drop';
+      const rationale = furnace ? 'Smelt sixteen carried iron in one batch.' : 'Wait for local quarry and collect beef.';
+      if (stage === 0) content = [call(tool, furnace
+        ? { item_name: 'raw_iron', count: 16, fuel_item_name: 'coal', rationale }
+        : { mob_name: 'mooshroom', drop_name: 'beef', count: 1, observe_for_ms: 150_000, rationale })];
+      if (stage === 1) {
+        assert.equal(lastResult.isError, false, lastResult.content[0].text);
+        assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
+        content = [call('view_status', { rationale: 'Verify the completed inventory gain.' })];
+      }
+    }
+    if (scenario === 'inventory-objectives') {
+      if (stage === 0) content = [call('ensure_items', {
+        items: [{ item_name: 'cooked_beef', count: 2 }], rationale: 'Prepare two cooked beef.',
+      })];
+      if (stage === 1) {
+        assert.equal(lastResult.isError, false, lastResult.content[0].text);
+        assert.match(lastResult.content[0].text, /cooked_beef: 2\/2 carried/);
+        content = [call('ensure_items', {
+          items: [{ item_name: 'diamond_boots', destination: 'feet' },
+            { item_name: 'diamond_helmet', destination: 'head' }], rationale: 'Fill the two requested armor slots.',
+        })];
+      }
+      if (stage === 2) {
+        assert.equal(lastResult.isError, false, lastResult.content[0].text);
+        assert.match(lastResult.content[0].text, /diamond_boots: 1\/1 in feet.*diamond_helmet: 1\/1 in head/s);
+        assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
+        content = [call('view_status', { rationale: 'Verify the equipped items and remaining diamonds.' })];
       }
     }
     if (scenario === 'decision' && stage < 3) {
@@ -120,17 +151,15 @@ export async function scriptedInference(agentDir, scenario) {
       if (stage === 0) {
         content = [call('raw_action', {
           operation: 'control', state: 'jump', ticks: 30,
-          submission_id: 'smoke-jump', rationale: 'Check the live viewer.',
-          response_format: 'json',
+          rationale: 'Check the live viewer.',
         })];
       }
-      if (stage === 2 || stage === 4 || stage === 6 || stage === 8) {
+      if (stage === 2 || stage === 4 || stage === 6) {
         assert.ok(messages.some(message => message.role === 'assistant' &&
           message.content.some(block => block.type === 'text' && block.text === earlyReply[0].text)));
         if (!actionId) {
-          const result = JSON.parse(lastResult.content[0].text).response.data;
-          assert.equal(result.state, 'accepted');
-          actionId = result.actionId;
+          assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
+          actionId = lastResult.content[0].text.match(/^Action ID: ([a-f0-9-]+)$/m)[1];
         }
         content = [call('wait_for_action', {
           action_id: actionId, timeout_ms: 120_000, rationale: 'Retrieve the existing jump.',
@@ -156,6 +185,9 @@ export async function scriptedInference(agentDir, scenario) {
         if (stage === 0) await delay(3000, undefined, { signal });
         if (stage === 0 && scenario === 'long-route') await delay(7000, undefined, { signal });
         if (stage === 0 && scenario === 'tool-interface') await delay(3500, undefined, { signal });
+        if (stage === 0 && ['long-furnace', 'long-hunt', 'inventory-objectives'].includes(scenario)) await delay(4500, undefined, { signal });
+        if (stage === 2 && ['long-furnace', 'long-hunt'].includes(scenario)) await delay(90_000, undefined, { signal });
+        if (stage === 3 && scenario === 'inventory-objectives') await delay(90_000, undefined, { signal });
         if (stage > 0 && ['stop', 'win', 'disconnect'].includes(scenario)) await delay(90_000, undefined, { signal });
         if ((stage === 8 && scenario === 'tool-interface') || (stage === 3 && scenario === 'long-route')) await delay(90_000, undefined, { signal });
         if (stage > 0 && scenario === 'decision') {
@@ -262,7 +294,7 @@ async function attempt(scenario, verify, options) {
   }
 }
 
-test('a premature final reply preserves a pending action and stale results do not extend retries', smokeOptions, () =>
+test('a premature final reply continues the run and stale results do not extend retries', smokeOptions, () =>
   attempt('continue', async ({ run, gamePort, terminal }) => {
     assert.equal((await fetch(run.viewer)).status, 200);
     assert.equal(run.player.health, 20);
@@ -279,7 +311,7 @@ test('a premature final reply preserves a pending action and stale results do no
     const settled = final.activity.findIndex(event => event.type === 'tool_execution_end' &&
       event.tool === 'mcp__minecraft__wait_for_action' && event.outcome === 'settled' && !event.isError);
     assert.ok(earlyFinal >= 0 && settled > earlyFinal);
-    assert.deepEqual(final.activity.filter(event => event.type === 'continuation').map(event => event.attempt), [1, 1, 2, 3]);
+    assert.deepEqual(final.activity.filter(event => event.type === 'continuation').map(event => event.attempt), [1, 2, 3]);
     assert.match(final.detail, /3 follow-ups produced no completed Minecraft action/);
   }));
 
@@ -312,7 +344,7 @@ test('Acacia reports a current decision through Pi and routine calls preserve it
   }));
 
 test('Pi follows a long route with one model call and releases the next action', smokeOptions, () =>
-  attempt('long-route', async ({ app, waitFor, terminal, consoleCommand }) => {
+  attempt('long-route', async ({ app, directory, waitFor, terminal, consoleCommand }) => {
     consoleCommand('gamerule doMobSpawning false');
     consoleCommand('gamerule fallDamage false');
     consoleCommand('forceload add -64 -16 80 16');
@@ -322,7 +354,8 @@ test('Pi follows a long route with one model call and releases the next action',
     const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
       event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action'));
     assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
-    const progress = done.activity.filter(event => event.type === 'action_progress');
+    const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    const progress = events.filter(event => event.type === 'action_progress');
     assert.ok(progress.length >= 3, 'route must span at least three internal waits');
     assert.equal(new Set(progress.map(event => event.actionId)).size, 1);
     assert.ok(progress[0].remainingDistance - progress.at(-1).remainingDistance >= 30, JSON.stringify(progress));
@@ -338,6 +371,51 @@ test('Pi follows a long route with one model call and releases the next action',
     assert.equal((await send(app.port, '/api/stop')).status, 202);
     assert.equal((await terminal()).state, 'stopped');
   }, { hardcore: true }));
+
+for (const scenario of ['long-furnace', 'long-hunt']) {
+  const furnace = scenario === 'long-furnace';
+  const tool = furnace ? 'smelt_item' : 'collect_mob_drop';
+  test(`Pi can finish ${scenario} with one model call after two minutes`, { ...smokeOptions, timeout: 265_000 }, () =>
+    attempt(scenario, async ({ app, directory, waitFor, terminal, consoleCommand }) => {
+      consoleCommand('gamerule doMobSpawning false');
+      consoleCommand('gamerule doDaylightCycle false');
+      consoleCommand('time set noon');
+      if (furnace) {
+        consoleCommand('give Acacia minecraft:furnace 1');
+        consoleCommand('give Acacia minecraft:raw_iron 16');
+        consoleCommand('give Acacia minecraft:coal 2');
+        consoleCommand('give Acacia minecraft:stone_pickaxe');
+      } else {
+        consoleCommand('gamerule fallDamage false');
+        consoleCommand('fill -62 169 -8 -50 169 8 minecraft:stone');
+        consoleCommand('tp Acacia -56.5 170 0.5');
+        consoleCommand('give Acacia minecraft:diamond_sword');
+        const hunting = await waitFor(run => run.activity.some(event =>
+          event.type === 'action_progress' && event.tool === tool && event.phase === 'observing') || run.state !== 'running');
+        assert.equal(hunting.state, 'running', hunting.detail);
+        const started = hunting.activity.find(event => event.type === 'tool_execution_start');
+        await delay(Math.max(0, Date.parse(started.time) + 125_000 - Date.now()));
+        consoleCommand('execute as Acacia at @s run summon minecraft:mooshroom ~1 ~ ~ {NoAI:1b,Silent:1b,Health:1f}');
+      }
+      const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
+        event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status'));
+      assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
+      const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+      const calls = events.filter(event => event.type === 'tool_execution_start');
+      assert.deepEqual(calls.map(event => event.tool), [`mcp__minecraft__${tool}`, 'mcp__minecraft__view_status']);
+      const receipt = events.find(event => event.type === 'tool_execution_end' && event.tool === calls[0].tool);
+      const duration = Date.parse(receipt.time) - Date.parse(calls[0].time);
+      assert.equal(receipt.outcome, 'settled');
+      assert.equal(receipt.isError, false);
+      assert.ok(duration >= 120_000, `Expected a job longer than two minutes, took ${duration} ms`);
+      const itemName = furnace ? 'iron_ingot' : 'beef';
+      const amount = furnace ? 16 : 1;
+      await waitFor(run => run.player?.inventory.some(item => item.name === itemName && item.count >= amount));
+      console.log(`${scenario}: ${duration} ms, one model call, verified ${amount} ${itemName}.`);
+      assert.equal((await send(app.port, '/api/stop')).status, 202);
+      assert.equal((await terminal()).state, 'stopped');
+    }, { hardcore: true, pollCount: 430 }));
+}
 
 test('Pi can deposit, build, and use both collection modes in Minecraft', smokeOptions, () =>
   attempt('tool-interface', async ({ app, directory, waitFor, terminal, consoleCommand }) => {
@@ -372,6 +450,41 @@ test('Pi can deposit, build, and use both collection modes in Minecraft', smokeO
     assert.equal((await send(app.port, '/api/stop')).status, 202);
     assert.equal((await terminal()).state, 'stopped');
   }));
+
+test('one Mine AI inventory objective can hunt and cook or mine, craft, and equip', smokeOptions, () =>
+  attempt('inventory-objectives', async ({ app, directory, waitFor, terminal, consoleCommand }) => {
+    consoleCommand('gamerule doMobSpawning false');
+    consoleCommand('gamerule doDaylightCycle false');
+    consoleCommand('gamerule fallDamage false');
+    consoleCommand('time set noon');
+    consoleCommand('fill -62 169 -8 -50 169 8 minecraft:stone');
+    consoleCommand('tp Acacia -56.5 170 0.5');
+    consoleCommand('give Acacia minecraft:iron_pickaxe');
+    consoleCommand('give Acacia minecraft:diamond_sword');
+    consoleCommand('give Acacia minecraft:diamond 4');
+    consoleCommand('give Acacia minecraft:furnace');
+    consoleCommand('give Acacia minecraft:crafting_table');
+    consoleCommand('give Acacia minecraft:coal');
+    consoleCommand('item replace entity Acacia armor.feet with minecraft:diamond_boots');
+    consoleCommand('setblock -54 170 2 minecraft:diamond_ore');
+    consoleCommand('setblock -55 170 2 minecraft:diamond_ore');
+    consoleCommand('setblock -57 170 2 minecraft:diamond_ore');
+    consoleCommand('setblock -58 170 2 minecraft:diamond_ore');
+    consoleCommand('summon minecraft:cow -55 170 0 {NoAI:1b,Silent:1b,Health:1f}');
+    consoleCommand('summon minecraft:cow -58 170 0 {NoAI:1b,Silent:1b,Health:1f}');
+    const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status'));
+    assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
+    const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    const receipts = events.filter(event => event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__ensure_items');
+    assert.equal(receipts.length, 2);
+    assert.ok(receipts.every(event => event.outcome === 'settled' && !event.isError));
+    assert.ok(events.some(event => event.type === 'action_progress' && event.phase === 'smelt_item'));
+    assert.equal(events.some(event => event.type === 'tool_execution_start' && event.tool.endsWith('__wait_for_action')), false);
+    await waitFor(run => run.player?.inventory.some(item => item.name === 'diamond_helmet' && item.location === 'head'));
+    assert.equal((await send(app.port, '/api/stop')).status, 202);
+    assert.equal((await terminal()).state, 'stopped');
+  }, { hardcore: true }));
 
 test('the server advancement ends continuation and proves the win', smokeOptions, () =>
   attempt('win', async ({ waitFor, terminal, consoleCommand }) => {
@@ -509,7 +622,7 @@ test('a natural Hardcore autosave restores a playable world and survives a death
       const replayCommand = command => docker('exec', replay, 'sh', '-c', 'printf "%s\n" "$1" > /proc/1/fd/0', 'sh', command);
       // Join the actual replay over its private loopback using the existing Mineflayer installation.
       const client = docker('run', '--rm', '--pull=never', `--network=container:${replay}`, '--entrypoint=bun',
-        'minecraft-mine-ai:de4fef3-primitives', '-e', `
+        'minecraft-mine-ai:acacia-foreground', '-e', `
           import mineflayer from 'mineflayer';
           const bot = mineflayer.createBot({ host: '127.0.0.1', username: 'Acacia', version: '1.21.4', auth: 'offline' });
           bot.once('error', error => { console.error(error); process.exit(1); });

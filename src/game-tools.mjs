@@ -1,9 +1,12 @@
-function variant(tool, name, description, { omit, require = [], operation, operations }) {
+const foregroundMetadata = ['submission_id', 'wait_timeout_ms', 'execution_timeout_ms', 'response_format'];
+const asyncDescription = ' Submits foreground work asynchronously.';
+
+function variant(tool, name, description, { omit, require = [], defaults, operations }) {
   const properties = { ...tool.inputSchema.properties };
   for (const key of omit) delete properties[key];
   if (operations) properties.operation = { ...properties.operation, enum: operations };
   return {
-    ...tool, name, description, target: tool.name, operation,
+    ...tool, name, description, target: tool.name, defaults,
     inputSchema: {
       ...tool.inputSchema, properties,
       required: [...(tool.inputSchema.required ?? []).filter(key => !omit.includes(key)), ...require],
@@ -12,48 +15,68 @@ function variant(tool, name, description, { omit, require = [], operation, opera
 }
 
 export function gameTools(catalogue) {
-  return catalogue.flatMap(tool => {
-    if (tool.name === 'collect_block' && tool.inputSchema.properties?.x) return [
-      variant(tool, 'collect_block',
-        'Gather a batch of item drops from matching blocks. Give the block name and how many drops you need (up to 32). The bot selects reachable targets, routes to them, equips its tool, mines, and picks up the drops. Supply a unique submission_id and optionally wait_timeout_ms.',
-        { omit: ['x', 'y', 'z'], require: ['count'] }),
-      variant(tool, 'collect_exact_block',
-        'Mine and collect one specific block at these exact coordinates. Use this when this individual block matters, such as recovering a workstation or clearing an obstruction. Supply a unique submission_id and optionally wait_timeout_ms.',
-        { omit: ['count'], require: ['x', 'y', 'z'] }),
-    ];
-    if (tool.name === 'build_structure') return [
-      variant(tool, 'build_structure',
-        'Build or excavate a list of absolute block cells as one job. Walk between cells, place or dig, and report remaining blockers. An air cell is a dig target. Supply a unique submission_id and optionally wait_timeout_ms.',
-        { omit: ['portal_frame'], require: ['blocks'] }),
-      variant(tool, 'build_portal_frame',
-        'Build a new unlit Nether portal frame, including clearing its six interior cells. Check an existing lit portal with view_blocks. Supply a unique submission_id and optionally wait_timeout_ms.',
-        { omit: ['blocks'], require: ['portal_frame'] }),
-    ];
-    if (tool.name === 'use_container') return [
-      variant(tool, 'use_container',
-        'Inspect a chest or transfer a batch of items. Use items only for deposit or withdraw. Specify the container block position. Supply a unique submission_id and optionally wait_timeout_ms. The result verifies the transfer.',
-        { omit: ['item_order'], operations: ['inspect', 'deposit', 'withdraw'] }),
-      variant(tool, 'organize_container',
-        'Compact a chest and sort it by item_order. List every distinct item exactly once. Supply a unique submission_id and optionally wait_timeout_ms.',
-        { omit: ['operation', 'items'], require: ['item_order'], operation: 'organize' }),
-    ];
-    if (tool.name === 'view_status') return [{
-      ...tool,
-      description: 'Get compact live status: position, vitals, active action, equipment, inventory counts, and nearby threats. Request detail=full for slot details, loaded mobs and drops, or other full diagnostics.',
-      inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
-        detail: { type: 'string', enum: ['compact', 'full'] },
-      } },
-    }];
-    if (tool.name === 'view_blocks') return [{
-      ...tool,
-      description: 'Read loaded blocks without moving. Use cells for exact coordinates, find for a short list of nearest matching blocks, or box when you need a terrain cross-section. Set find.limit to request more matches.',
-    }];
-    return [tool];
-  });
+  return catalogue.map(tool => {
+    // Mine AI adds these two fields only when registering a foreground action.
+    const schema = tool.inputSchema;
+    if (!schema.required?.includes('submission_id') || !schema.properties?.wait_timeout_ms) return tool;
+    const properties = { ...schema.properties };
+    const executionLimit = properties.execution_timeout_ms?.maximum;
+    for (const key of foregroundMetadata) delete properties[key];
+    return {
+      ...tool, foreground: true, executionLimit,
+      description: tool.description?.split(asyncDescription)[0],
+      inputSchema: { ...schema, properties, required: schema.required.filter(key => !foregroundMetadata.includes(key)) },
+    };
+  }).flatMap(gameVariants);
+}
+
+function gameVariants(tool) {
+  if (tool.name === 'collect_block' && tool.inputSchema.properties?.x) return [
+    variant(tool, 'collect_block',
+      'Gather item drops from matching blocks. Give the block name and how many drops you need (up to 32). The bot selects reachable targets, equips a tool, mines, and picks up the drops.',
+      { omit: ['x', 'y', 'z'], require: ['count'] }),
+    variant(tool, 'collect_exact_block',
+      'Mine and collect one specific block at these exact coordinates, such as a workstation or an obstruction.',
+      { omit: ['count'], require: ['x', 'y', 'z'] }),
+  ];
+  if (tool.name === 'build_structure') return [
+    variant(tool, 'build_structure',
+      'Build or excavate a list of absolute block cells. An air cell is a dig target.',
+      { omit: ['portal_frame'], require: ['blocks'] }),
+    variant(tool, 'build_portal_frame',
+      'Build a new unlit Nether portal frame, including clearing its six interior cells.',
+      { omit: ['blocks'], require: ['portal_frame'] }),
+  ];
+  if (tool.name === 'use_container') return [
+    variant(tool, 'use_container',
+      'Inspect a chest or transfer a batch of items. Use items only for deposit or withdraw. Specify the container block position.',
+      { omit: ['item_order'], operations: ['inspect', 'deposit', 'withdraw'] }),
+    variant(tool, 'organize_container',
+      'Compact a chest and sort it by item_order. List every distinct item exactly once.',
+      { omit: ['operation', 'items'], require: ['item_order'], defaults: { operation: 'organize' } }),
+  ];
+  if (tool.name === 'smelt_item' && tool.inputSchema.properties?.temporary_workstation) return [
+    variant(tool, 'smelt_item', 'Smelt a batch in a carried furnace. The bot places and recovers the furnace.',
+      { omit: ['temporary_workstation', 'x', 'y', 'z'], defaults: { temporary_workstation: true } }),
+    variant(tool, 'smelt_at_furnace', 'Smelt a batch at an existing furnace at these coordinates.',
+      { omit: ['temporary_workstation'], require: ['x', 'y', 'z'], defaults: { temporary_workstation: false } }),
+  ];
+  if (tool.name === 'view_status') return [{
+    ...tool,
+    description: 'Get compact live status: position, vitals, active action, equipment, inventory counts, and nearby threats. Request detail=full for slot details, loaded mobs and drops, or other full diagnostics.',
+    inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
+      detail: { type: 'string', enum: ['compact', 'full'] },
+    } },
+  }];
+  if (tool.name === 'view_blocks') return [{
+    ...tool,
+    description: 'Read loaded blocks without moving. Use cells for exact coordinates, find for a short list of nearest matching blocks, or box when you need a terrain cross-section. Set find.limit to request more matches.',
+  }];
+  return [tool];
 }
 
 export function gameArguments(tool, args) {
-  if (tool.operation) return { ...args, operation: tool.operation };
+  if (tool.target) return { ...args, ...tool.defaults };
   if (tool.name === 'view_blocks' && args.find && args.find.limit === undefined) {
     return { ...args, find: { ...args.find, limit: 4 } };
   }

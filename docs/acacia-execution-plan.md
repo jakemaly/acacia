@@ -1,8 +1,8 @@
 # Acacia execution plan
 
-A delegated job starts with a verifiable objective and ends with a receipt. Acacia picks the objective and any consequential constraints. Mine AI owns the actions needed to meet it. Pi follows the job by action ID and returns control when Acacia can make a useful decision.
+A delegated job starts with a verifiable objective and ends with a receipt. Acacia chooses the next milestone and any strategic constraints. Mine AI chooses and carries out the steps, including what to do when a route or target becomes unusable. Pi follows the job by action ID and returns control when Acacia can make a useful decision.
 
-## 1. Carry one job across tool waits
+## 1. Initial waiter (deployed)
 
 Replace the collection-only polling branch in `src/pi.mjs` and its inventory-gain predicate in `src/game-tools.mjs` with a shared waiter for navigation and collection. Start with those two existing actions. Their typed checkpoints already carry the quantities and navigation distance we need to test. Record a poll as telemetry and show the job's progress in the dashboard's existing activity area.
 
@@ -12,6 +12,16 @@ Replace the collection-only polling branch in `src/pi.mjs` and its inventory-gai
 4. Hand control back on verified completion, a terminal error, newly unsafe conditions, or an exhausted progress or resource budget. A report on an active job includes its action ID and choices to continue waiting or cancel. A settled partial result includes what it accomplished and what blocked it. To terminate a job, request cancellation and retrieve the settled result before another foreground action starts.
 
 The first tests use the existing Unix-socket fixture in `test/pi-context.test.mjs`. A route makes progress over several waits and finishes with one model tool call. A route going in circles yields a stall. Tests also cover a reported safety interruption and a disconnect after admission. In the live-game fixture, observe one navigation request, its final position, and the next action starting after the result gate clears. [Mine AI's action lifecycle](https://github.com/aibengineering/mine-ai-mcp/blob/de4fef3260424d973bf81d0eaa15ff1a2f73ecff/docs/mcp/async-actions.md)
+
+### Catalogue-driven jobs and inventory objectives
+
+Run `f2d85c3bfaa7` completed a 20-iron mining batch in one model call. Smelting 16 iron took one execution and eight model polls because Pi shortened each wait to 15 seconds. A cow hunt used the shared waiter, still returned after the 120-second observation limit, and needed three model polls. The published Mine AI run gave all eight smelting requests 120 seconds. Its 20- and 24-iron jobs each needed one follow-up. The physical jobs were already capable of advancing during those waits. [Acacia run activity](/home/jake/.local/share/mine-ai/f2d85c3bfaa7/activity.jsonl) · [Published transcript](https://huggingface.co/datasets/aibengineering/beat-the-game-minecraft/blob/de4bfb91972d263e592276c3a33a8b49d3e75d81/transcript.jsonl)
+
+1. Pi identifies foreground tools through the submission and wait fields Mine AI adds to the catalogue. It generates the submission key and waits on the resulting action ID for every foreground tool. The gameplay interface omits transport and timeout fields. The protocol retains explicit wait and cancellation.
+2. Mine AI's controller owns progress, safety and cleanup. A polling interval expiry, failed candidate, or recoverable hit can update telemetry without invoking the model. The candidate uses the image's 15-minute deadline as an outer bound and returns the action's final result. A lost connection preserves the known action ID.
+3. `ensure_items` accepts carried counts or exact equipment slots. It reads live inventory and equipped slots, selects supported recipes and loaded sources, and composes existing collection, smelting, crafting and equipping actions under one owner. It recomputes the remaining deficit after verified inventory changes. Explicit work areas, systematic source alternatives, and obstacle recovery are separate follow-on work. [Alto Clef resource tasks](https://github.com/gaucho-matrero/altoclef/blob/af22e3bc2f03dde45da703f5f7535baae18ea486/src/main/java/adris/altoclef/tasks/squashed/CataloguedResourceTask.java#L20-L62) · [Mine AI action runner](https://github.com/aibengineering/mine-ai-mcp/blob/de4fef3260424d973bf81d0eaa15ff1a2f73ecff/src/session/action-runner.ts)
+
+Before another long run, use scripted inference on isolated servers to verify one model call through a furnace batch longer than 120 seconds and a second long action with different progress, such as mob-drop collection. Then verify the same inventory objective module with food and a partial equipment set. Force an interruption with a safe resumption and an exhausted scope that returns a useful blocker. Compare matched runs on model calls per completed objective, verified work, damage, and supplies spent. Use the dashboard for intermediate progress and keep normal tool replies short.
 
 ## 2. Give gathering and routing a useful scope
 
@@ -33,12 +43,16 @@ Test a recovery fixture with nearby verified cover and a farther escape route. V
 
 ## 4. Compose existing work using an Alto Clef pattern
 
-Add a small inventory planner to the existing action runner once scoped jobs work. Accept desired inventory or equipment as data. Recipes and current inventory compute the first missing prerequisite. Existing collect, smelt, craft and equip implementations do the work under the same foreground owner. Compose internally so child steps share the interrupt, cancellation and progress rules. The planner rechecks actual state after each child finishes and advances only when the required change is observed.
+Add a small inventory planner within the existing action runner. The initial fixtures can use controlled terrain. Require scoped jobs and local safety recovery before expanding to long expeditions. Child steps share the parent's interrupt, cancellation and progress rules.
 
 Use two different fixtures to show reuse. An equipment fixture starts with a partial set and verifies the exact deficit and final slots. A food fixture chains acquisition and cooking to an inventory target. The same acquisition and job lifecycle should serve both. [Alto Clef task runner](https://github.com/gaucho-matrero/altoclef/blob/af22e3bc2f03dde45da703f5f7535baae18ea486/src/main/java/adris/altoclef/tasksystem/TaskRunner.java#L21-L40)
 
 ## Comparison and rollout
 
+The winning trace used seed `97996358`, Minecraft 1.21.4, Normal Survival, and Claude Opus 5 at high effort. It issued 59 explicit waits in 388 tool calls. It also changed its survival policy during play and recovered from a Creeper death. Acacia uses the same seed and Minecraft version with GPT-6.1 Terra at medium reasoning. Hardcore adds different strategic instructions, uses Hard difficulty, and ends the attempt on death. The logged run reached diamond armor, then died to a Creeper on the way back to the surface. The wall-clock comparison therefore mixes model, client, policy and survival rules. Use Normal Survival for parity comparisons and Hardcore for the actual survival target. [Published settings](https://github.com/aibengineering/mine-ai-mcp/blob/de4fef3260424d973bf81d0eaa15ff1a2f73ecff/compose.beatthegame.yaml#L14-L20) · [Server setup](https://github.com/aibengineering/mine-ai-mcp/blob/de4fef3260424d973bf81d0eaa15ff1a2f73ecff/docker/prepare.mjs#L24-L28) · [Acacia death review](/home/jake/.local/share/mine-ai/f2d85c3bfaa7/reflection.json)
+
+By the first diamond armor advancement, the winner had submitted 38 tool calls. Acacia's run `f2d85c3bfaa7` submitted 92, including 30 waits, and still made 62 calls worth of decisions, inspections, and direct actions. Acacia's most frequent non-wait calls before that milestone included collecting, crafting, smelting, placing blocks, and inspecting status. This is where inventory objectives can remove further calls after polling has been internalized. [Winning transcript](https://huggingface.co/datasets/aibengineering/beat-the-game-minecraft/blob/de4bfb91972d263e592276c3a33a8b49d3e75d81/transcript.jsonl) · [Acacia activity](/home/jake/.local/share/mine-ai/f2d85c3bfaa7/activity.jsonl)
+
 Use deterministic real-server setups for the focused checks. Compare the deployed and candidate harness from identical starting states and keep model, effort, and game difficulty fixed. The first success criterion is one model request through a healthy long-route fixture, with the usual handoff when the fixture is blocked. Record model turns per job, foreground idle time, wall time to verified completion, damage, blocks spent, and the distance of any retreat. When an improvement holds across the ore, route and combat fixtures, run full Hardcore attempts on the original seed and additional seeds. Observe milestone times and safe extraction. Compare reasoning levels separately after those checks.
 
-The first deployable slice is the shared waiter with existing `navigate`. It can be tested separately from new targeting and combat policy. The wider plan includes work in both the local harness and the pinned Mine AI image.
+The shared waiter with existing `navigate` was the first deployable slice. The next change spans the local harness and the pinned Mine AI image.

@@ -1,4 +1,5 @@
 import { rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
@@ -10,13 +11,7 @@ import { followAction } from './action-wait.mjs';
 export const modelId = 'gpt-6.1-terra';
 export const thinkingLevel = 'medium';
 const maxContinuationsWithoutAction = 3;
-const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state. Call the next useful Minecraft tool. If a foreground action is pending or its result has not been retrieved, recover that action first.';
-const monitoredActions = new Set(['navigate', 'collect_block', 'collect_mob_drop']);
-const defaultExecutionTimeouts = {
-  collect_mob_drop: 120_000,
-  explore_frontier: 120_000,
-  navigate: 180_000,
-};
+const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state.';
 
 function mcpDisconnected(error) {
   return error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET' ||
@@ -55,7 +50,7 @@ export async function openai(agentDir) {
   return { runtime, model };
 }
 
-export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false, actionWaitMs, inference = openai }) {
+export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false, inference = openai }) {
   const { runtime, model } = await inference(agentDir);
   const dispatcher = new Agent({ connect: { socketPath: socket } });
   let client;
@@ -77,8 +72,11 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     signal.throwIfAborted();
     await connectMcp();
     const catalogue = await client.listTools({ signal });
-    if (catalogue.length !== 37 || catalogue.some(tool => tool.name.startsWith('debug_'))) {
-      throw new Error('Mine AI did not expose the 37 standard tools.');
+    if (catalogue.some(tool => tool.name.startsWith('debug_'))) {
+      throw new Error('Mine AI exposed debug tools to the gameplay session.');
+    }
+    for (const name of ['view_status', 'wait_for_action', 'cancel_foreground_action']) {
+      if (!catalogue.some(tool => tool.name === name)) throw new Error(`Mine AI is missing ${name}.`);
     }
     async function callMinecraft(name, args, toolSignal, replayable = false) {
       try {
@@ -102,29 +100,15 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     const tools = gameTools(catalogue).map(tool => ({
       name: `mcp__minecraft__${tool.name}`,
       label: tool.name,
-      description: monitoredActions.has(tool.name)
-        ? `${tool.description} Set wait_timeout_ms to the time you can give this objective. Pi follows the same job while it progresses and surfaces stalls or danger.`
-        : tool.description,
+      description: tool.description,
       parameters: tool.inputSchema,
       async execute(id, args, toolSignal) {
         const compactStatus = tool.name === 'view_status' && args.detail !== 'full' && args.response_format !== 'json';
-        const requestedWait = args.wait_timeout_ms;
         args = gameArguments(tool, args);
-        // The async action keeps its owner and checkpoint after a wait expires.
-        // Bound how long Pi goes without a chance to reconsider the action.
-        const waitKey = tool.name === 'wait_for_action' ? 'timeout_ms' : 'wait_timeout_ms';
-        if (actionWaitMs && args[waitKey] > actionWaitMs) args = { ...args, [waitKey]: actionWaitMs };
-        const executionTimeout = defaultExecutionTimeouts[tool.name];
-        if (actionWaitMs && executionTimeout && tool.inputSchema.properties?.execution_timeout_ms &&
-            args.execution_timeout_ms === undefined) {
-          args = { ...args, execution_timeout_ms: executionTimeout };
-        }
-        const pollMs = Math.min(actionWaitMs ?? 5_000, 5_000);
         const target = tool.target ?? tool.name;
-        const monitored = monitoredActions.has(tool.name) && typeof args.submission_id === 'string' &&
-          Number.isInteger(requestedWait) && requestedWait > pollMs && requestedWait <= 120_000;
-        const result = monitored
-          ? await followAction({ name: target, args, requestedWait, pollMs,
+        const result = tool.foreground
+          ? await followAction({ name: target, args: { ...args, submission_id: randomUUID() },
+            executionLimit: tool.executionLimit,
             call: (name, params) => callMinecraft(name, params, toolSignal, true),
             isTransportFailure: error => mcpDisconnected(error) || error instanceof McpSessionExpiredError,
             onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
