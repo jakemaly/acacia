@@ -1,5 +1,5 @@
 diff --git a/src/navigation/processes/building/build-process.test.ts b/src/navigation/processes/building/build-process.test.ts
-index 8f8cbc4..8fb1fa5 100644
+index 8f8cbc4..c129981 100644
 --- a/src/navigation/processes/building/build-process.test.ts
 +++ b/src/navigation/processes/building/build-process.test.ts
 @@ -3,9 +3,10 @@ import assert from "node:assert/strict";
@@ -14,7 +14,49 @@ index 8f8cbc4..8fb1fa5 100644
 
  const goalTestWorld = new GoalTestWorld();
 
-@@ -254,6 +255,31 @@ test("a cell asked to be air is dug clear without being asked to remove wrong bl
+@@ -101,6 +102,41 @@ test("a sealed box is finished from outside: the bot walks out before the last b
+   assert.ok(finalFeet.x < 0 || finalFeet.x > 2 || finalFeet.z < 0 || finalFeet.z > 2, `ended outside, at ${finalFeet}`);
+ });
+
++test("a route that ends inside the same enclosure stops the build with a safety reason", async () => {
++  const { bot, physics, put, placements } = structureWorld();
++  // The waypoint lies in a roofed passage whose only outlet is the cell being filled.
++  for (let x = -1; x <= 3; x += 1) {
++    for (let y = 64; y <= 66; y += 1) {
++      for (let z = -1; z <= 2; z += 1) {
++        const passage = y <= 65 && ((x >= 0 && x <= 2 && z === 0) || (x === 2 && z === 1));
++        const outlet = y === 64 && x === 0 && z >= 1;
++        if (!passage && !outlet) put(new Vec3(x, y, z), "stone");
++      }
++    }
++  }
++  const arrival = { x: 2, y: 64, z: 1 };
++  let routes = 0;
++  const result = await build(bot, {
++    ...physics,
++    cells: cells([[0, 64, 1]]),
++    removeWrongBlocks: false,
++    route: async ({ goal }) => {
++      assert.equal(++routes, 1, "the same escape waypoint must not be retried");
++      const resolved = goal.resolve(observation());
++      assert.equal(resolved.kind, "active");
++      assert.ok(resolved.isSatisfied({ feet: arrival, remainingScaffolds: 0, overlayId: "" }, goalTestWorld));
++      bot.entity.position = new Vec3(arrival.x + 0.5, arrival.y, arrival.z + 0.5);
++      return { status: "completed", elapsedMs: 0 };
++    },
++  });
++
++  assert.equal(routes, 1);
++  assert.equal(result.status, "stopped");
++  assert.match(result.reason ?? "", /escape waypoint/);
++  assert.deepEqual(kinds(result), ["would_enclose"]);
++  assert.deepEqual(placements, []);
++});
++
+ test("enclosesBot reads a roofed box as sealed and a doorway as open", () => {
+   const { bot, put } = structureWorld({ feet: new Vec3(1, 64, 1) });
+   const filled = new Set(hollowBox().map(([x, y, z]) => packKey(x, y, z)));
+@@ -254,6 +290,31 @@ test("a cell asked to be air is dug clear without being asked to remove wrong bl
    assert.equal(bot.blockAt(new Vec3(2, 64, 0))!.name, "air");
  });
 
@@ -47,7 +89,7 @@ index 8f8cbc4..8fb1fa5 100644
    const { bot, physics, placements } = structureWorld();
    let stopped = false;
 diff --git a/src/navigation/processes/building/build-process.ts b/src/navigation/processes/building/build-process.ts
-index d6c4620..3c09028 100644
+index d6c4620..9ca664a 100644
 --- a/src/navigation/processes/building/build-process.ts
 +++ b/src/navigation/processes/building/build-process.ts
 @@ -438,9 +438,15 @@ async function workInReach(
@@ -68,3 +110,14 @@ index d6c4620..3c09028 100644
      } else if (state.kind === "placeable") {
        const item = bot.inventory.items().find((candidate) => candidate.name === target.blockName)!;
        const placed = await request.place({
+@@ -483,5 +489,10 @@ export async function build(bot: Bot, request: BuildRequest): Promise<BuildResul
+       if (exit.status === "stopped") {
+         return targeting.result("stopped", `could not step out of the structure: ${exit.reason}`);
+       }
++      // The waypoint can be inside the same cave. Repeating an already satisfied route never yields to I/O.
++      targeting.refresh();
++      if (targeting.standingInStructure() || targeting.onlyEnclosing()) {
++        return targeting.result("stopped", "Reached the escape waypoint, but the remaining blocks still cannot be placed safely.");
++      }
+       continue;
+     }
