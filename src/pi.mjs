@@ -8,7 +8,7 @@ import { Agent, fetch } from 'undici';
 import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
 import { followAction } from './action-wait.mjs';
 
-export const modelId = 'gpt-6.1-terra';
+export const modelId = 'gpt-6-luna';
 export const thinkingLevel = 'medium';
 const maxContinuationsWithoutAction = 3;
 const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state.';

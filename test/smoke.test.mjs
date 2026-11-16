@@ -105,8 +105,7 @@ export async function scriptedInference(agentDir, scenario) {
         assert.equal(lastResult.isError, false, lastResult.content[0].text);
         assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
         assert.match(lastResult.content[0].text, /Final Pathfinder node is \*\*(?:0\.\d{2}|1\.00) blocks/);
-        content = [call('raw_action', { operation: 'control', state: 'jump', ticks: 5,
-          ...work })];
+        content = [call('view_status', { rationale: 'Confirm the route finished and the next call runs.' })];
       }
     }
     if (scenario === 'long-furnace' || scenario === 'long-hunt') {
@@ -149,10 +148,8 @@ export async function scriptedInference(agentDir, scenario) {
     if (['expired', 'logging'].includes(scenario) && stage === 1) content = [call('view_status', { rationale: 'Read the bot after reconnecting.' })];
     if (scenario === 'continue') {
       if (stage === 0) {
-        content = [call('raw_action', {
-          operation: 'control', state: 'jump', ticks: 30,
-          rationale: 'Check the live viewer.',
-        })];
+        content = [call('navigate', { x: 55, y: 150, z: 0, range: 1, dig: false, scaffold: false,
+          rationale: 'Cross the fixture using the navigation action.' })];
       }
       if (stage === 2 || stage === 4 || stage === 6) {
         assert.ok(messages.some(message => message.role === 'assistant' &&
@@ -162,7 +159,7 @@ export async function scriptedInference(agentDir, scenario) {
           actionId = lastResult.content[0].text.match(/^Action ID: ([a-f0-9-]+)$/m)[1];
         }
         content = [call('wait_for_action', {
-          action_id: actionId, timeout_ms: 120_000, rationale: 'Retrieve the existing jump.',
+          action_id: actionId, timeout_ms: 120_000, rationale: 'Retrieve the existing navigation action.',
           ...(stage === 4 ? { response_format: 'json' } : {}),
         })];
       }
@@ -295,7 +292,13 @@ async function attempt(scenario, verify, options) {
 }
 
 test('a premature final reply continues the run and stale results do not extend retries', smokeOptions, () =>
-  attempt('continue', async ({ run, gamePort, terminal }) => {
+  attempt('continue', async ({ run, gamePort, terminal, consoleCommand }) => {
+    consoleCommand('gamerule doMobSpawning false');
+    consoleCommand('gamerule fallDamage false');
+    consoleCommand('forceload add -64 -16 80 16');
+    await delay(1000);
+    consoleCommand('fill -44 149 -3 65 149 3 minecraft:stone');
+    consoleCommand('tp Acacia -40.5 150 0.5');
     assert.equal((await fetch(run.viewer)).status, 200);
     assert.equal(run.player.health, 20);
     assert.ok(Array.isArray(run.player.inventory));
@@ -352,7 +355,7 @@ test('Pi follows a long route with one model call and releases the next action',
     consoleCommand('fill -44 149 -3 65 149 3 minecraft:stone');
     consoleCommand('tp Acacia -40.5 150 0.5');
     const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
-      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action'));
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status'));
     assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
     const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     const progress = events.filter(event => event.type === 'action_progress');
@@ -363,9 +366,9 @@ test('Pi follows a long route with one model call and releases the next action',
     const nav = done.activity.filter(event => event.tool === 'mcp__minecraft__navigate');
     assert.equal(nav.length, 2);
     assert.equal(nav[1].outcome, 'settled');
-    const jump = done.activity.find(event => event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__raw_action');
-    assert.equal(jump.outcome, 'settled');
-    assert.equal(jump.isError, false);
+    const released = done.activity.find(event => event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status');
+    assert.equal(released.outcome, 'settled');
+    assert.equal(released.isError, false);
     const duration = Date.parse(nav[1].time) - Date.parse(nav[0].time);
     console.log(`Long route fixture: ${progress.length} polls, ${duration} ms, health ${progress.at(-1).health}/20.`);
     assert.equal((await send(app.port, '/api/stop')).status, 202);
