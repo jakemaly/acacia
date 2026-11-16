@@ -1,8 +1,8 @@
 diff --git a/src/actions/view-blocks/view-blocks.test.ts b/src/actions/view-blocks/view-blocks.test.ts
-index 4681010..b46415c 100644
+index 4681010..2af331c 100644
 --- a/src/actions/view-blocks/view-blocks.test.ts
 +++ b/src/actions/view-blocks/view-blocks.test.ts
-@@ -89,6 +89,33 @@ test("a name Minecraft has no block for fails the view rather than finding nothi
+@@ -89,6 +89,56 @@ test("a name Minecraft has no block for fails the view rather than finding nothi
    assert.match((result as { error: string }).error, /no block named unobtainium/);
  });
 
@@ -31,6 +31,29 @@ index 4681010..b46415c 100644
 +  assert.deepEqual(match?.listed.map(({ x, y, z }) => [x, y, z]), [
 +    [-290, 44, -266], [-290, 43, -266], [-290, 44, -267],
 +  ]);
++});
++
++test("a 473-chunk cave search counts dense matches without retaining them", () => {
++  const names = ["obsidian", "stone", "deepslate", "air"];
++  const states = names.map((name) => registry.blocksByName[name]!.defaultState);
++  const stateAt = ({ x, y, z }: Vec3) => states[(x + y + z) & 3]!;
++  const mixed = { solidBlockCount: 3072, data: {}, palette: states, get: stateAt };
++  const column = { minY: -64, sections: Array(8).fill(mixed) };
++  const columns = Array.from({ length: 473 }, (_, index) => ({
++    chunkX: Math.floor(index / 22) - 7, chunkZ: index % 22 - 27, column,
++  }));
++  const bot = botFixture({ position: new Vec3(50, -47, -264) }, {
++    world: { getColumns: () => columns },
++    blockAt: (position: Vec3) => registry.blocksByStateId[stateAt(position)],
++  });
++  const request = parseViewBlocksRequest({ find: { block_names: names, limit: 4 } });
++  const start = performance.now();
++  const result = viewBlocks(bot, request);
++
++  assert.ok(performance.now() - start < 5000, "view_blocks exceeded the heartbeat deadline");
++  assert.equal(result.status, "succeeded");
++  assert.deepEqual(result.blocks.find?.map(({ name, found, listed }) => [name, found, listed.length]),
++    names.map((name) => [name, 473 * 8 * 1024, 4]));
 +});
 +
  test("a box is drawn top layer first as one grid per layer with a legend", () => {
