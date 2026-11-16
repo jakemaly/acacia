@@ -1,0 +1,53 @@
+diff --git a/src/utils/craft-plan.test.ts b/src/utils/craft-plan.test.ts
+index 56c2014..bc910d1 100644
+--- a/src/utils/craft-plan.test.ts
++++ b/src/utils/craft-plan.test.ts
+@@ -1,4 +1,5 @@
+ import assert from "node:assert/strict";
++import { createRequire } from "node:module";
+ import test from "node:test";
+ import { craftingBot, craftingRegistry as registry } from "../test-support/crafting.js";
+ import { planCraftingFromInventory } from "./craft-plan.js";
+@@ -92,3 +93,19 @@ test("an acquisition planner sees diamonds as a missing leaf through compression
+   assert.equal(preparation.kind, "missing_materials");
+   assert.deepEqual(preparation.plan.missingMaterials, [{ item: "diamond", count: 1 }]);
+ });
++
++test("a short wooden tools batch asks for another carried species of log", () => {
++  const { Recipe } = createRequire(import.meta.url)("prismarine-recipe")(registry) as {
++    Recipe: { find(id: number, metadata: number | null): ReturnType<typeof bot.recipesAll> };
++  };
++  const { bot } = craftingBot({ oak_log: 3 });
++  bot.recipesAll = (id, metadata, table) => Recipe.find(id, metadata).filter((recipe) => !recipe.requiresTable || table);
++  // One table is placed for the batch and the other is requested as carried output.
++  const targets = ["crafting_table", "crafting_table", "wooden_pickaxe", "wooden_sword"].map((name) => ({
++    ...registry.itemsByName[name], count: 1,
++  }));
++
++  const preparation = planCraftingFromInventory(bot, targets);
++  assert.equal(preparation.kind, "missing_materials");
++  assert.deepEqual(preparation.plan.missingMaterials, [{ item: "oak_log", count: 1 }]);
++});
+diff --git a/src/utils/craft-plan.ts b/src/utils/craft-plan.ts
+index 8d08c21..142e377 100644
+--- a/src/utils/craft-plan.ts
++++ b/src/utils/craft-plan.ts
+@@ -97,9 +97,15 @@ function recipeInputs(recipe: MineflayerRecipe): readonly { id: number; count: n
+   return recipe.delta.filter((item) => item.count < 0);
+ }
+
+-function missingScore(state: PlanningState): readonly [number, number, number] {
+-  const missingUnits = [...state.missing.values()].reduce((total, count) => total + count, 0);
+-  return [missingUnits, state.missing.size, state.applications.length];
++function missingScore(state: PlanningState): readonly number[] {
++  let missingUnits = 0;
++  let unfamiliarUnits = 0;
++  for (const [id, count] of state.missing) {
++    missingUnits += count;
++    // For equally short recipes, prefer more of a material already used from the bot's inventory.
++    if (!state.carried.has(id)) unfamiliarUnits += count;
++  }
++  return [missingUnits, state.missing.size, unfamiliarUnits, state.applications.length];
+ }
+
+ function isBetterCandidate(candidate: PlannedCandidate, current: PlannedCandidate | null): boolean {
