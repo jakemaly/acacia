@@ -1,5 +1,5 @@
 diff --git a/src/navigation/processes/building/build-process.test.ts b/src/navigation/processes/building/build-process.test.ts
-index 8f8cbc4..c129981 100644
+index 8f8cbc4..7d982fc 100644
 --- a/src/navigation/processes/building/build-process.test.ts
 +++ b/src/navigation/processes/building/build-process.test.ts
 @@ -3,9 +3,10 @@ import assert from "node:assert/strict";
@@ -48,7 +48,7 @@ index 8f8cbc4..c129981 100644
 +
 +  assert.equal(routes, 1);
 +  assert.equal(result.status, "stopped");
-+  assert.match(result.reason ?? "", /escape waypoint/);
++  assert.match(result.reason ?? "", /escape waypoint at \(2,\s*64,\s*1\)/);
 +  assert.deepEqual(kinds(result), ["would_enclose"]);
 +  assert.deepEqual(placements, []);
 +});
@@ -89,7 +89,7 @@ index 8f8cbc4..c129981 100644
    const { bot, physics, placements } = structureWorld();
    let stopped = false;
 diff --git a/src/navigation/processes/building/build-process.ts b/src/navigation/processes/building/build-process.ts
-index d6c4620..9ca664a 100644
+index d6c4620..b5e897d 100644
 --- a/src/navigation/processes/building/build-process.ts
 +++ b/src/navigation/processes/building/build-process.ts
 @@ -438,9 +438,15 @@ async function workInReach(
@@ -110,14 +110,17 @@ index d6c4620..9ca664a 100644
      } else if (state.kind === "placeable") {
        const item = bot.inventory.items().find((candidate) => candidate.name === target.blockName)!;
        const placed = await request.place({
-@@ -483,5 +489,10 @@ export async function build(bot: Bot, request: BuildRequest): Promise<BuildResul
+@@ -483,5 +489,13 @@ export async function build(bot: Bot, request: BuildRequest): Promise<BuildResul
        if (exit.status === "stopped") {
          return targeting.result("stopped", `could not step out of the structure: ${exit.reason}`);
        }
 +      // The waypoint can be inside the same cave. Repeating an already satisfied route never yields to I/O.
 +      targeting.refresh();
 +      if (targeting.standingInStructure() || targeting.onlyEnclosing()) {
-+        return targeting.result("stopped", "Reached the escape waypoint, but the remaining blocks still cannot be placed safely.");
++        return targeting.result(
++          "stopped",
++          `Reached the escape waypoint at ${feetOf(bot)}, but the remaining blocks still cannot be placed safely`,
++        );
 +      }
        continue;
      }
