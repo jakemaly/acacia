@@ -289,7 +289,11 @@ async function attempt(scenario, verify, options) {
       const prompt = transcript.messages.find(message => message.role === 'user')?.text;
       const decision = (await readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8')).trim();
       assert.ok(prompt.startsWith(decision ? `${base}\n\n${decision}` : base));
-      if (decision) assert.match(prompt.slice(base.length), /Objective:.*Observation:.*Change course if:/s);
+      const survivalPrompt = (await readFile(new URL('../deploy/prompt.txt', import.meta.url), 'utf8')).trimEnd();
+      const hardcorePrompt = (await readFile(new URL('../deploy/hardcore.txt', import.meta.url), 'utf8')).trimEnd();
+      assert.ok(hardcorePrompt.startsWith(survivalPrompt));
+      assert.doesNotMatch(prompt, /\bbow\b|arrows|12-20|15-20|32 diamonds|one trip/i);
+      if (decision) assert.match(prompt.slice(base.length), /Objective:.*Observation:/s);
       assert.equal(manifest.promptSha256, createHash('sha256').update(prompt).digest('hex'));
       const properties = await readFile(join(directory, 'server/server.properties'), 'utf8');
       assert.ok(properties.split('\n').includes(`hardcore=${hardcore}`));

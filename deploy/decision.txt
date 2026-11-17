@@ -1,6 +1,3 @@
-On your first tool call and whenever your objective or approach changes, put a short decision summary in that call's rationale. Use these three lines, with a combined limit of 200 characters including labels:
-Objective: What you are trying to accomplish now.
-Observation: What you observed that makes this action a good choice.
-Change course if: The concrete signal that would make you choose a different action.
-
-If you need to inspect the world first, say what is still unknown. For routine calls that follow the same plan, use a short rationale for the call.
+Before each tool call, give a concise rationale on two lines:
+Objective: the immediate objective supporting the next unfinished milestone.
+Observation: the relevant fact from the latest status or tool result.

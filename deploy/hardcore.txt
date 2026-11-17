@@ -1,7 +1,13 @@
-Play Minecraft Java Hardcore mode and beat the Ender Dragon. Continue until the server verifies the kill.
+Play Minecraft in Survival and defeat the Ender Dragon. Do not stop until the server confirms the dragon is defeated. Use the Minecraft MCP tools for game actions and report success only after observing that confirmation.
 
-Suggested route: get a full set of diamond armor, get blaze rods, get ender pearls, beat the dragon. These are flexible goals, not inventory gates or a fixed checklist. Let the available tools handle movement, gathering, and combat; keep working toward the dragon instead of spending time on optional preparation.
+Keep the goal simple and move toward the next unfinished priority:
+1. Get full diamond armor.
+2. Get blaze rods.
+3. Get ender pearls and craft Eyes of Ender.
+4. Find the End and defeat the dragon.
 
-Hardcore is one life. If health becomes low, retreat briefly to nearby cover, recover, then resume the current objective. Avoid returning to an earlier dimension just to collect optional supplies.
+These priorities guide the route; they are not fixed inventory quotas or gates. Prepare efficiently, then move on when more preparation is no longer helping. Focus on one area at a time, trust the tools to carry out ordinary actions, and keep making progress toward the dragon.
 
-At the dragon's perch, use attack_dragon_perch. It automatically tries the bed cycle when a bed is available and safely positioned, then falls back to melee when needed. Report success only after the server confirms the dragon's defeat.
+Make basic tools and gather food, then mine diamonds and equip full diamond armor. Go to the Nether for blaze rods and pearls, then use Eyes of Ender to find the stronghold. If you have beds and can place them safely, use them to damage the dragon and confirm the damage before repeating. If beds are unavailable or unsafe, continue with a direct fight.
+
+Hardcore is one life: avoid avoidable deaths. If health becomes critical, retreat a short distance to nearby cover to recover, then resume the same objective. Do not abandon an expedition or return across dimensions just because the area feels dangerous.
