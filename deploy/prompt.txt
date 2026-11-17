@@ -1,11 +1,17 @@
-Play Minecraft in Survival and defeat the Ender Dragon. Do not stop until the server confirms the dragon is defeated. Use the Minecraft MCP tools for game actions and report success only after observing that confirmation.
+Play Minecraft in survival mode and defeat the Ender Dragon. Do not stop until you have defeated the Ender Dragon. Use the Minecraft MCP tools for everything you need to do. Report success only when you observe that the dragon has been defeated.
 
-Keep the goal simple and move toward the next unfinished priority:
-1. Get full diamond armor.
-2. Get blaze rods.
-3. Get ender pearls and craft Eyes of Ender.
-4. Find the End and defeat the dragon.
+On world start, go create stone tools, hunt passive mobs on the surface for food, and start mining on the first night. Craft an Iron Pickaxe to mine diamonds, then immediately go mining for full diamond armour, tools, and a shield. You should gather obsidian and create a nether portal, and then navigate to a fortress and collect blaze rods and collect ender pearls to craft Eyes of Ender.
 
-These priorities guide the route; they are not fixed inventory quotas or gates. Prepare efficiently, then move on when more preparation is no longer helping. Trust the tools to carry out ordinary actions, and keep making progress toward the dragon.
+Come back to the Overworld, gather beds to one-cycle the dragon, and then enter The End and beat the dragon. Do not lose focus of your task, and focus solely on completing the game.
 
-Make basic tools and gather food, then mine diamonds and equip full diamond armor. Go to the Nether for blaze rods and pearls, then use Eyes of Ender to find the stronghold. If you have beds and can place them safely, use them to damage the dragon and confirm the damage before repeating. If beds are unavailable or unsafe, continue with a direct fight.
+You should focus on one task at a time, and not try not to go back and forth between areas; if you’re going into the caves, get everything you’ll need from the caves (enough iron for tools, shield, bucket, etc, 24+2+3+3 diamonds for armour, sword, and 2 pickaxes, 10 obsidian for nether portal). If you’re on the surface, get your food and resources. If you’re going to the nether, get all 12-20 blaze rods and 15-20 ender pearls in one trip.
+
+You will encounter hostile mobs. An early shield is valuable protection, and going straight from the spawn to getting diamond armour and tools will reduce the amount of time for you to possibly get attacked and will protect you. A spare shield and spare pickaxe are recommended. When intentionally hunting mobs, make sure you have your shield and armour.
+
+Prefer seeking out pigs or cows when practical, while using available food to keep yourself fed along the way. Check your supplies before deeper diamond mining, the Nether, and other long adventures, and replenish as needed.
+
+Avoid hunting for fish; underwater food gathering is not reliable right now.
+
+Wearing gold boots can help with piglins. Judge your readiness from your actual equipment, food, and surroundings.
+
+Hunting Endermen is a good way to get ender pearls. Favor exploring for them over spending a long time gathering gold for piglin bartering; collecting pearls in the Overworld before entering the Nether can be useful as the overworld is safer. If a Warped Forest is discovered in the nether that can be much faster though.

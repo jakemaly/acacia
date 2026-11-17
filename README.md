@@ -2,7 +2,7 @@
 
 Pi plays a fresh Minecraft 1.21.4 Survival world on seed `97996358`. [Mine AI MCP](https://github.com/aibengineering/mine-ai-mcp/tree/de4fef3260424d973bf81d0eaa15ff1a2f73ecff) owns the bot Acacia, actions, and survival reflexes. The dashboard starts and stops one run, shows tool activity, and embeds the bot’s first-person view. The Minecraft client can join as spectator.
 
-Pi uses GPT-6 Luna at high reasoning through ChatGPT sign-in. Select **Survival** or **Hardcore** before pressing **Start**. Both modes share the goal and milestone priorities informed by the [published Mine AI run](https://huggingface.co/datasets/aibengineering/beat-the-game-minecraft/resolve/main/prompt.txt) (CC BY 4.0, aibengineering); Hardcore adds one-life and nearby-recovery guidance. The original win used Claude Opus 5 at high effort in Claude Code. Tool-call rationales state the immediate objective and relevant observation. Each attempt begins from an empty world. Success requires the server to record the bot’s `minecraft:end/kill_dragon` advancement.
+Pi uses GPT-6 Luna at high reasoning through ChatGPT sign-in. Select **Survival** or **Hardcore** before pressing **Start**. Both modes use the gameplay instructions in `deploy/prompt.txt`; `deploy/hardcore.txt` contains the same prompt for Hardcore runs. Tool-call rationales state the immediate objective and relevant observation. Each attempt begins from an empty world. Success requires the server to record the bot’s `minecraft:end/kill_dragon` advancement.
 
 ## Run locally
 
