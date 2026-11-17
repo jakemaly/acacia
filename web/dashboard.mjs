@@ -4,6 +4,10 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, character =>
 const isNumber = value => Number.isFinite(value);
 const when = value => new Date(value).toLocaleTimeString();
 const title = value => value ? value[0].toUpperCase() + value.slice(1) : '';
+const modelLabel = value => {
+  const match = String(value ?? '').match(/^gpt-(\d+(?:\.\d+)?)-([a-z]+)$/i);
+  return match ? `GPT-${match[1]} ${title(match[2])}` : String(value ?? '');
+};
 const toolLabel = value => (value ?? 'tool').replace(/^mcp__minecraft__/, '').replaceAll('_', ' ');
 const timeline = $('timeline');
 let run = {};
@@ -59,18 +63,76 @@ function setAgent(mode, label) {
   $('activity').textContent = label;
 }
 
-function renderDecision(decision) {
-  const panel = $('current-decision');
-  panel.hidden = !decision;
-  if (!decision) return;
-  for (const [id, value] of [
-    ['decision-objective', decision.objective],
-    ['decision-observation', decision.observation],
-    ['decision-change-course', decision.changeCourse],
-  ]) {
-    const field = $(id);
-    if (field.textContent !== value) field.textContent = value;
+function latestToolCall() {
+  const calls = [...messages.values()].flatMap(message => message.calls ?? []);
+  const latest = run.activity?.findLast(event => event.type === 'tool_execution_start');
+  return (latest && calls.find(call => call.id === latest.id)) ?? calls.at(-1);
+}
+
+function actionAsset(call) {
+  if (!call) return;
+  const name = call.name.replace(/^mcp__minecraft__/, '');
+  const args = call.args ?? {};
+  const requested = Array.isArray(args.items) ? args.items.find(item => item?.item_name)?.item_name
+    : typeof args.items === 'string' ? args.items : undefined;
+  const pick = (...values) => values.find(value => typeof value === 'string' && value.trim());
+  let asset;
+  if (name === 'collect_block' || name === 'collect_exact_block') {
+    asset = { name: pick(args.block_name, args.block, args.block_type), kind: 'blocks' };
   }
+  else if (name === 'collect_mob_drop') asset = { name: args.drop_name, kind: 'items' };
+  else if (name === 'craft_item' || name === 'use_container') asset = { name: requested, kind: 'items' };
+  else if (name === 'smelt_item' || name === 'smelt_at_furnace') asset = { name: args.item_name, kind: 'items' };
+  else if (name === 'equip') asset = { name: pick(args.item_name, args.item), kind: 'items' };
+  else if (name === 'pick_up_items') asset = { name: args.item, kind: 'items' };
+  else if (name === 'ensure_items') asset = { name: pick(args.item_name, requested), kind: 'items' };
+  else if (name === 'use_bucket') {
+    asset = { name: args.action === 'fill' ? `${args.liquid}_bucket` : 'bucket', kind: 'items' };
+  }
+  else if (name === 'place_block') asset = { name: pick(args.block_name, args.block), kind: 'blocks' };
+  const id = String(asset?.name ?? '').replace(/^minecraft:/, '').replace(/[^a-zA-Z0-9_]/g, '');
+  return id ? { id, kind: asset.kind } : undefined;
+}
+
+function renderActionIcon(call) {
+  const image = $('activity-icon');
+  const asset = actionAsset(call);
+  if (!asset) {
+    image.hidden = true;
+    image.dataset.asset = '';
+    image.removeAttribute('src');
+    image.onerror = null;
+    return;
+  }
+  const assetKey = `${asset.kind}/${asset.id}`;
+  if (image.dataset.asset === assetKey) return;
+  image.dataset.asset = assetKey;
+  image.dataset.fallback = '0';
+  image.alt = `${asset.id.replaceAll('_', ' ')} ${asset.kind === 'blocks' ? 'block' : 'item'}`;
+  image.hidden = false;
+  const root = 'https://raw.githubusercontent.com/PrismarineJS/minecraft-assets/master/data/1.21.4';
+  const primary = `${root}/${asset.kind}/${asset.id}.png`;
+  const fallback = `${root}/${asset.kind === 'blocks' ? 'items' : 'blocks'}/${asset.id}.png`;
+  image.onerror = () => {
+    if (image.dataset.fallback === '0') {
+      image.dataset.fallback = '1';
+      image.src = fallback;
+    } else image.hidden = true;
+  };
+  image.src = primary;
+}
+
+function renderDecision(rationale) {
+  const panel = $('current-rationale');
+  const raw = typeof rationale === 'string' ? rationale.trim() : '';
+  const normalized = raw.replace(/\s+/g, ' ');
+  const change = /\s+Change(?: course)?(?: if)?:[\s\S]*$/i;
+  const fields = normalized.match(/^Objective:\s*(.+?)\s+Observation:\s*(.+?)(?:\s+Change(?: course)?(?: if)?:.*)?$/i);
+  const value = fields?.[1]?.trim() && fields[2]?.trim()
+    ? `Objective: ${fields[1].trim()}\nObservation: ${fields[2].trim()}`
+    : raw.replace(change, '').trim();
+  panel.hidden = !value;
+  if (panel.textContent !== value) panel.textContent = value;
 }
 
 function renderMeter(container, value, sprite, empty) {
@@ -145,6 +207,7 @@ function renderStatus() {
   $('run-state').classList.toggle('ready', run.state === 'running' || run.state === 'won');
   $('run-detail').textContent = run.detail ?? '';
   $('run-detail').hidden = !run.detail;
+  if (run.model) $('model-picker').textContent = modelLabel(run.model);
   $('current-task').textContent = run.spectator ?? '';
   $('current-task-panel').hidden = !run.spectator;
   $('reasoning-value').textContent = title(run.thinkingLevel);
@@ -180,7 +243,10 @@ function renderStatus() {
     : movement || collection || cooking || construction;
   setAgent(run.state === 'running' ? pending ? pending.tool.endsWith('__navigate') ? 'walking' : 'acting' : 'thinking' : 'idle',
     detail ? `${label} · ${detail}` : label);
-  renderDecision(run.decision);
+  const latestCall = latestToolCall();
+  const currentCall = run.state === 'running' ? latestCall : undefined;
+  renderDecision(currentCall?.args?.rationale);
+  renderActionIcon(currentCall);
   renderHealth();
 }
 
@@ -264,6 +330,7 @@ async function refresh() {
       messages.clear();
     }
     for (const message of page.messages) messages.set(message.offset, message);
+    renderStatus();
     renderConversation();
   } catch (error) {
     showError(error.message);

@@ -147,6 +147,7 @@ export function startRun(config) {
     let ready = false;
     let savedWorld = false;
     let death;
+    let survivalStarted = false;
     let finish;
     const terminal = new Promise(resolve => { finish = resolve; });
     const prompt = new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url);
@@ -157,7 +158,8 @@ export function startRun(config) {
       const [gameplay, decision] = await Promise.all([
         readFile(prompt, 'utf8'), readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8'),
       ]);
-      const promptText = `${gameplay.trimEnd()}\n\n${decision}`;
+      const extraInstructions = decision.trim();
+      const promptText = extraInstructions ? `${gameplay.trimEnd()}\n\n${extraInstructions}` : gameplay;
       const inspected = await docker(['image', 'inspect', config.collection?.runtime?.image ?? mineImage], { timeout: 10_000 });
       const [image] = JSON.parse(inspected.stdout);
       const labels = image.Config.Labels ?? {};
@@ -234,14 +236,30 @@ export function startRun(config) {
           dispatcher, signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]),
         });
         const status = await response.json();
-        if (status.minecraft?.username === bot && (hardcore || collector) && status.minecraft.lastDeath && status.minecraft.lastDeath.observedAt !== death?.observedAt) {
-          death = status.minecraft.lastDeath;
-          record('death', { death });
-          if (hardcore) {
-            finish(death.cause);
-            abort.abort();
-          } else {
-            void collector.death(death);
+        const minecraft = status.minecraft;
+        if (minecraft?.username === bot && (hardcore || collector)) {
+          if (minecraft.gamemode === 'survival') survivalStarted = true;
+          const reportedDeath = minecraft.lastDeath;
+          let newDeath = false;
+          if (reportedDeath && (!death || reportedDeath.observedAt !== death.observedAt)) {
+            death = reportedDeath;
+            newDeath = true;
+          } else if (hardcore && survivalStarted && minecraft.gamemode === 'spectator' && !death) {
+            // Hardcore death changes the player to spectator, even when /health omits lastDeath.
+            death = await recordedDeath(directory).catch(() => null) ?? {
+              observedAt: new Date().toISOString(),
+              cause: 'Acacia entered spectator mode after entering Survival.',
+            };
+            newDeath = true;
+          }
+          if (newDeath) {
+            record('death', { death });
+            if (hardcore) {
+              finish(death.cause);
+              abort.abort();
+            } else {
+              void collector.death(death);
+            }
           }
         }
         if (!status.ok || !status.minecraft?.connected || status.minecraft.username !== bot) return null;

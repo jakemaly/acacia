@@ -49,7 +49,14 @@
     [hidden] { display:none !important; }
     .app { width:100%; height:100%; margin:0 auto; padding:18px 28px 24px; display:grid; grid-template-rows:auto minmax(0,1fr); }
     .topbar { display:flex; align-items:center; gap:18px; padding-bottom:14px; border-bottom:1px solid var(--line); }
-    .topbar .context-tabs { align-self:stretch; align-items:flex-end; margin:0 0 -14px auto; border-bottom:0; }
+    .topbar-meta { display:flex; flex-direction:column; align-items:flex-end; gap:3px; min-width:0; margin-left:auto; }
+    .topbar-status { display:flex; align-items:center; justify-content:flex-end; gap:16px; min-width:0; }
+    .topbar-status .model-controls { display:flex; align-items:center; flex-wrap:wrap; gap:14px; }
+    .topbar-status #model-slot { width:auto; font-weight:600; }
+    .topbar-status .reasoning-control { grid-template-columns:auto auto; gap:5px; }
+    .topbar-status .reasoning-control output { width:auto; }
+    .topbar-status .auth { justify-content:flex-end; }
+    .topbar .context-tabs { align-self:flex-end; align-items:flex-end; margin:0; border-bottom:0; }
     .brand h1 { margin:0; font-size:21px; line-height:1.25; font-weight:620; letter-spacing:-.025em; }
     .brand p { display:flex; align-items:center; gap:5px; margin:4px 0 0; color:var(--muted); font-size:12px; }
     .connection,.auth { display:flex; align-items:center; flex-wrap:wrap; gap:4px; min-width:0; }
@@ -84,9 +91,8 @@
     .agent-card[data-mode="thinking"] .activity-line::before,.agent-card[data-mode="acting"] .activity-line::before,.agent-card[data-mode="walking"] .activity-line::before { background:var(--green); }
     .activity-line h3 { display:inline-block; max-width:100%; margin:0; padding:4px 8px; border-radius:2px; background:var(--trace-tool); color:var(--green); font:600 14px/1.3 system-ui,sans-serif; overflow-wrap:anywhere; }
     .agent-card[data-mode="idle"] .activity-line h3 { background:transparent; color:var(--muted); padding-left:0; }
-    .current-decision { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:4px 12px; margin:2px 0; padding:4px 0 4px 10px; border-left:2px solid var(--line); }
-    .current-decision dt { color:var(--muted); font-weight:600; }
-    .current-decision dd { min-width:0; margin:0; overflow-wrap:anywhere; }
+    .current-rationale { min-width:0; max-width:100%; margin:0; color:var(--text); font:13px/1.45 system-ui,sans-serif; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .activity-icon { width:24px; height:24px; flex:0 0 24px; object-fit:contain; image-rendering:pixelated; }
     .current-task { min-width:0; display:flex; align-items:baseline; gap:8px; padding:4px 0 8px; color:var(--text); font:13px/1.4 system-ui,sans-serif; }
     .current-task-label { flex:0 0 auto; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
     .current-task-text { min-width:0; overflow-wrap:anywhere; }
@@ -159,7 +165,7 @@
     .food { width:14px; height:14px; image-rendering:pixelated; }
     .inventory-panel { min-width:0; padding:2px 0 6px; color:var(--text); font:12px/1.4 system-ui,sans-serif; }
     .inventory-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; color:var(--muted); font-size:11px; }
-    .inventory-items { display:flex; flex-wrap:wrap; gap:4px 8px; max-height:58px; overflow:auto; }
+    .inventory-items { display:flex; flex-wrap:wrap; align-content:flex-start; gap:4px 8px; max-height:min(22vh,160px); overflow:auto; }
     .inventory-item { display:inline-flex; align-items:center; gap:3px; min-height:24px; white-space:nowrap; }
     .inventory-icon { width:20px; height:20px; object-fit:contain; image-rendering:pixelated; }
     .inventory-item-name { color:var(--text); font-size:10px; }
@@ -193,7 +199,10 @@
       body { min-width:0; overflow:auto; }
       .app { min-height:100dvh; height:auto; grid-template-rows:auto auto; }
       .topbar { align-items:flex-start; flex-wrap:wrap; }
-      .topbar .context-tabs { width:100%; margin:0; }
+      .topbar-meta { width:100%; margin-left:0; align-items:flex-start; }
+      .topbar-status { justify-content:flex-start; flex-wrap:wrap; }
+      .topbar-status .auth { justify-content:flex-start; }
+      .topbar .context-tabs { width:auto; align-self:flex-start; margin:0; }
       .studio-layout { grid-template-columns:minmax(0,1fr); overflow:visible; }
       .context-column { min-height:560px; border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }
       .stage-column { overflow:visible; }
@@ -201,10 +210,6 @@
       .steve { height:128px; }
       .agent-stage { height:136px; }
       .theme-toggle { margin-top:16px; }
-    }
-    @media (max-width:480px) {
-      .current-decision { grid-template-columns:minmax(0,1fr); gap:2px; }
-      .current-decision dd:not(:last-child) { margin-bottom:4px; }
     }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; } }
   </style>
@@ -216,9 +221,20 @@
         <p><span>Goal</span><span class="world-rule">Beat the Ender Dragon</span></p>
         <p class="world-rules"><span>Difficulty</span><span class="world-rule" id="difficulty">—</span><span>· Seed 97996358</span></p>
       </div>
-      <div class="context-tabs" role="tablist" aria-label="Agent details">
-        <button id="conversation-tab" class="context-tab" type="button" role="tab" aria-controls="trace-panel" aria-selected="true">Conversation</button>
-        <button id="runs-tab" class="context-tab" type="button" role="tab" aria-controls="runs-panel" aria-selected="false">Runs</button>
+      <div class="topbar-meta">
+        <div class="topbar-status">
+          <div class="model-controls">
+            <div id="model-slot"><span id="model-picker">GPT-6 Luna</span></div>
+            <span class="reasoning-control">Reasoning <output id="reasoning-value">Medium</output></span>
+          </div>
+          <div class="auth" id="auth">
+            <span id="service" class="connection" aria-live="polite" aria-label="ChatGPT OAuth"><span class="dot"></span>ChatGPT OAuth</span>
+          </div>
+        </div>
+        <div class="context-tabs" role="tablist" aria-label="Agent details">
+          <button id="conversation-tab" class="context-tab" type="button" role="tab" aria-controls="trace-panel" aria-selected="true">Conversation</button>
+          <button id="runs-tab" class="context-tab" type="button" role="tab" aria-controls="runs-panel" aria-selected="false">Runs</button>
+        </div>
       </div>
     </header>
 
@@ -256,21 +272,8 @@
           <section class="agent-card" id="agent-card" data-mode="idle" aria-label="Agent state">
             <div class="agent-stage"><img id="steve" class="steve" src="https://skinrender.dev/render/steve/body?size=384" alt="Steve standing"></div>
             <div class="activity-block">
-              <div class="activity-line" id="activity-line" hidden><h3 id="activity">Waiting for a run</h3></div>
-              <dl class="current-decision" id="current-decision" aria-label="Acacia’s current decision" aria-live="polite" aria-atomic="true" hidden>
-                <dt>Objective</dt><dd id="decision-objective"></dd>
-                <dt>Observation</dt><dd id="decision-observation"></dd>
-                <dt>Change course if</dt><dd id="decision-change-course"></dd>
-              </dl>
-              <div class="model-controls">
-                <div id="model-slot"><span id="model-picker">GPT-6.1 Terra</span></div>
-                <span class="reasoning-control">Reasoning <output id="reasoning-value">Medium</output></span>
-              </div>
-              <div class="agent-controls">
-                <div class="auth" id="auth">
-                  <span id="service" class="connection" aria-live="polite" aria-label="ChatGPT OAuth"><span class="dot"></span>ChatGPT OAuth</span>
-                </div>
-              </div>
+              <div class="activity-line" id="activity-line" hidden><img id="activity-icon" class="activity-icon" alt="" hidden><h3 id="activity">Waiting for a run</h3></div>
+              <p class="current-rationale" id="current-rationale" aria-label="Current tool rationale" aria-live="polite" aria-atomic="true" hidden></p>
             </div>
           </section>
           <div class="current-task" id="current-task-panel" hidden>

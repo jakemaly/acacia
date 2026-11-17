@@ -6,10 +6,11 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { McpClient, McpConnectionClosedError, McpError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { Agent, fetch } from 'undici';
 import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
+import { filterStatusPlayers } from './status-privacy.mjs';
 import { followAction } from './action-wait.mjs';
 
 export const modelId = 'gpt-6-luna';
-export const thinkingLevel = 'medium';
+export const thinkingLevel = 'high';
 const maxContinuationsWithoutAction = 3;
 const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state.';
 
@@ -106,7 +107,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         const compactStatus = tool.name === 'view_status' && args.detail !== 'full' && args.response_format !== 'json';
         args = gameArguments(tool, args);
         const target = tool.target ?? tool.name;
-        const result = tool.foreground
+        const rawResult = tool.foreground
           ? await followAction({ name: target, args: { ...args, submission_id: randomUUID() },
             executionLimit: tool.executionLimit,
             call: (name, params) => callMinecraft(name, params, toolSignal, true),
@@ -114,6 +115,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
             onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
           })
           : await callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
+        const result = tool.name === 'view_status' ? filterStatusPlayers(rawResult) : rawResult;
         const response = result.structuredContent?.response;
         // Polling or retrieving an old result again does not make progress.
         const completed = response?.data?.output?.action ? response.data.actionId
