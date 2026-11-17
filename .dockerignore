@@ -6,4 +6,7 @@
 !deploy/view-blocks.patch
 !deploy/build-progress.patch
 !deploy/search-budget.patch
+!deploy/mine-ai-source/
+!deploy/mine-ai-source/**
+!deploy/mine-ai-source.commit
 !deploy/primitives.patch

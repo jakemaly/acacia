@@ -14,8 +14,10 @@ import { defaultPrimitives, minePolicy, recordedDeath } from './primitives.mjs';
 
 const docker = promisify(execFile).bind(null, 'docker');
 const serverImage = 'eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817bbceb6b3be94109b4a784d46078099882dda';
-const mineImage = 'minecraft-mine-ai:acacia-foreground';
+const mineImage = 'minecraft-mine-ai:acacia-fork-compat';
 const revision = 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff';
+const forkRepository = 'https://github.com/jakemaly/mine-ai-mcp';
+const forkCommit = '12d55d41f2084dca20eb33451d22f839bf8b7101';
 const jarHash = '4707d00eb834b446575d89a61a11b5d548d8c001';
 const bot = 'Acacia';
 const seed = '97996358';
@@ -158,17 +160,22 @@ export function startRun(config) {
       const promptText = `${gameplay.trimEnd()}\n\n${decision}`;
       const inspected = await docker(['image', 'inspect', config.collection?.runtime?.image ?? mineImage], { timeout: 10_000 });
       const [image] = JSON.parse(inspected.stdout);
-      if (image.Config.Labels?.['org.opencontainers.image.revision'] !== revision) {
-        throw new Error('The Mine AI image does not match the pinned source revision.');
+      const labels = image.Config.Labels ?? {};
+      if (labels['org.opencontainers.image.revision'] !== revision ||
+          labels['org.opencontainers.image.base-revision'] !== revision ||
+          labels['org.opencontainers.image.source'] !== forkRepository ||
+          labels['org.opencontainers.image.fork-revision'] !== forkCommit) {
+        throw new Error('The Mine AI image does not match the pinned private fork and upstream base.');
       }
-      const runtime = { image: image.Id, jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
+      const runtime = { image: image.Id, imageDigest: image.Id, forkRepository, forkCommit,
+        jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
         hardcore, profile, model: modelId, thinkingLevel };
       if (config.collection?.runtime && !isDeepStrictEqual(config.collection.runtime, runtime)) {
         throw new Error('The current Minecraft runtime differs from this collection session.');
       }
       if (config.collection) config.collection.runtime = runtime;
       await writeFile(join(directory, 'run.json.tmp'), JSON.stringify({
-        id, seed, bot, version: '1.21.4', revision, ...runtime,
+        id, seed, bot, version: '1.21.4', revision, forkRepository, forkCommit, imageDigest: image.Id, ...runtime,
         parent: config.parent, collectionSession: config.collection?.id,
       }, null, 2));
       await rename(join(directory, 'run.json.tmp'), join(directory, 'run.json'));

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { Agent, fetch as socketFetch } from 'undici';
+import { McpClient, StreamableHttpTransport } from '@earendil-works/pi-mcp';
 import { openai } from '../src/pi.mjs';
 import { dashboard } from '../src/server.mjs';
 import { restoreCheckpoint } from '../src/checkpoints.mjs';
@@ -61,7 +62,7 @@ export async function scriptedInference(agentDir, scenario) {
           const chest = messages.findLast(message => message.role === 'assistant' &&
             message.content.some(block => block.name === 'mcp__minecraft__use_container')).content[0].arguments;
           return call('build_structure', { ...work,
-            blocks: [{ x: chest.x + 1, y: chest.y, z: chest.z, block_name: 'cobblestone' }] });
+            blocks: [{ x: chest.x - 2, y: chest.y, z: chest.z, block_name: 'cobblestone' }] });
         },
         () => {
           assert.equal(lastResult.isError, false, lastResult.content[0].text);
@@ -92,20 +93,33 @@ export async function scriptedInference(agentDir, scenario) {
       ][stage];
       if (next) content = [next()];
     }
-    if (scenario === 'long-route') {
+    if (scenario === 'long-route' || scenario === 'cancel-route') {
       const work = { rationale: 'Cross the fixture and verify the next action can run.' };
       if (stage === 0) content = [call('view_status', { rationale: 'Get the fixture start position.' })];
       if (stage === 1) {
         const { x, y, z } = lastResult.details.structuredContent.response.data.result.situation.position;
         assert.equal(y, 150, 'the route must start on the fixture platform');
-        content = [call('navigate', { ...work, x: Math.floor(x) + 96, y, z: Math.floor(z), range: 1,
+        const distance = scenario === 'cancel-route' ? 150 : 96;
+        content = [call('navigate', { ...work, x: Math.floor(x) + distance, y, z: Math.floor(z), range: 1,
           dig: false, scaffold: false })];
       }
       if (stage === 2) {
+        if (scenario === 'cancel-route') {
+          assert.equal(lastResult.isError, true, lastResult.content[0].text);
+          assert.match(lastResult.content[0].text, /\*\*Status:\*\* cancelled/i);
+          content = [call('navigate', { x: -40, y: 150, z: 0, range: 1, dig: false, scaffold: false,
+            rationale: 'Resume the fixture after cancellation and verify a new route can settle.' })];
+        } else {
+          assert.equal(lastResult.isError, false, lastResult.content[0].text);
+          assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
+          assert.match(lastResult.content[0].text, /Final Pathfinder node is \*\*(?:0\.\d{2}|1\.00) blocks/);
+          content = [call('view_status', { rationale: 'Confirm the route finished and the next call runs.' })];
+        }
+      }
+      if (stage === 3 && scenario === 'cancel-route') {
         assert.equal(lastResult.isError, false, lastResult.content[0].text);
         assert.match(lastResult.content[0].text, /\*\*Status:\*\* succeeded/);
-        assert.match(lastResult.content[0].text, /Final Pathfinder node is \*\*(?:0\.\d{2}|1\.00) blocks/);
-        content = [call('view_status', { rationale: 'Confirm the route finished and the next call runs.' })];
+        content = [call('view_status', { rationale: 'Confirm the session remains usable after cancellation.' })];
       }
     }
     if (scenario === 'long-furnace' || scenario === 'long-hunt') {
@@ -180,12 +194,13 @@ export async function scriptedInference(agentDir, scenario) {
     return {
       async *[Symbol.asyncIterator]() {
         if (stage === 0) await delay(3000, undefined, { signal });
-        if (stage === 0 && scenario === 'long-route') await delay(7000, undefined, { signal });
+        if (stage === 0 && ['long-route', 'cancel-route'].includes(scenario)) await delay(7000, undefined, { signal });
         if (stage === 0 && scenario === 'tool-interface') await delay(3500, undefined, { signal });
         if (stage === 0 && ['long-furnace', 'long-hunt', 'inventory-objectives'].includes(scenario)) await delay(4500, undefined, { signal });
         if (stage === 2 && ['long-furnace', 'long-hunt'].includes(scenario)) await delay(90_000, undefined, { signal });
         if (stage === 3 && scenario === 'inventory-objectives') await delay(90_000, undefined, { signal });
         if (stage > 0 && ['stop', 'win', 'disconnect'].includes(scenario)) await delay(90_000, undefined, { signal });
+        if (stage === 4 && scenario === 'cancel-route') await delay(90_000, undefined, { signal });
         if ((stage === 8 && scenario === 'tool-interface') || (stage === 3 && scenario === 'long-route')) await delay(90_000, undefined, { signal });
         if (stage > 0 && scenario === 'decision') {
           await delay(stage === 3 ? 90_000 : stage === 2 ? 4000 : 1500, undefined, { signal });
@@ -266,10 +281,15 @@ async function attempt(scenario, verify, options) {
       const hardcore = mode === 'hardcore';
       const manifest = JSON.parse(await readFile(join(directory, 'run.json'), 'utf8'));
       assert.equal(manifest.hardcore, hardcore);
+      assert.equal(manifest.revision, 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff');
+      assert.equal(manifest.forkRepository, 'https://github.com/jakemaly/mine-ai-mcp');
+      assert.equal(manifest.forkCommit, '12d55d41f2084dca20eb33451d22f839bf8b7101');
+      assert.equal(manifest.imageDigest, manifest.image);
       const base = (await readFile(new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url), 'utf8')).trimEnd();
       const prompt = transcript.messages.find(message => message.role === 'user')?.text;
-      assert.ok(prompt.startsWith(base + '\n\n'));
-      assert.match(prompt.slice(base.length), /Objective:.*Observation:.*Change course if:/s);
+      const decision = (await readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8')).trim();
+      assert.ok(prompt.startsWith(decision ? `${base}\n\n${decision}` : base));
+      if (decision) assert.match(prompt.slice(base.length), /Objective:.*Observation:.*Change course if:/s);
       assert.equal(manifest.promptSha256, createHash('sha256').update(prompt).digest('hex'));
       const properties = await readFile(join(directory, 'server/server.properties'), 'utf8');
       assert.ok(properties.split('\n').includes(`hardcore=${hardcore}`));
@@ -354,8 +374,8 @@ test('Pi follows a long route with one model call and releases the next action',
     await delay(2000);
     consoleCommand('fill -44 149 -3 65 149 3 minecraft:stone');
     consoleCommand('tp Acacia -40.5 150 0.5');
-    const done = await waitFor(run => run.state !== 'running' || run.activity.some(event =>
-      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status'));
+    const done = await waitFor(run => run.state !== 'running' || run.activity.filter(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status').length >= 2);
     assert.equal(done.state, 'running', done.state === 'saving' ? (await terminal()).detail : done.detail);
     const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     const progress = events.filter(event => event.type === 'action_progress');
@@ -366,11 +386,68 @@ test('Pi follows a long route with one model call and releases the next action',
     const nav = done.activity.filter(event => event.tool === 'mcp__minecraft__navigate');
     assert.equal(nav.length, 2);
     assert.equal(nav[1].outcome, 'settled');
-    const released = done.activity.find(event => event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status');
-    assert.equal(released.outcome, 'settled');
+    const released = done.activity.filter(event => event.type === 'tool_execution_end' &&
+      event.tool === 'mcp__minecraft__view_status').at(-1);
     assert.equal(released.isError, false);
     const duration = Date.parse(nav[1].time) - Date.parse(nav[0].time);
     console.log(`Long route fixture: ${progress.length} polls, ${duration} ms, health ${progress.at(-1).health}/20.`);
+    assert.equal((await send(app.port, '/api/stop')).status, 202);
+    assert.equal((await terminal()).state, 'stopped');
+  }, { hardcore: true }));
+
+test('an external MCP client can cancel a foreground route and Pi receives its final receipt', smokeOptions, () =>
+  attempt('cancel-route', async ({ app, directory, waitFor, terminal, consoleCommand }) => {
+    consoleCommand('gamerule doMobSpawning false');
+    consoleCommand('gamerule fallDamage false');
+    consoleCommand('forceload add -64 -16 336 16');
+    await delay(2000);
+    consoleCommand('fill -44 149 -3 305 149 3 minecraft:stone');
+    consoleCommand('tp Acacia -40.5 150 0.5');
+    const moving = await waitFor(run => run.activity.some(event => event.type === 'action_progress' &&
+      event.tool === 'navigate') || run.state !== 'running');
+    assert.equal(moving.state, 'running', moving.detail);
+    const dispatcher = new Agent({ connect: { socketPath: join(directory, 'io/mcp.sock') } });
+    const client = new McpClient({ name: 'cancellation smoke client', version: '1.0.0' });
+    let cancellation;
+    try {
+      await client.connect(new StreamableHttpTransport({
+        url: 'http://127.0.0.1:25575/mcp',
+        fetch: (url, options) => socketFetch(url, { ...options, dispatcher }),
+      }));
+      const status = await client.callTool('view_status', {
+        response_format: 'json', rationale: 'Observe the active navigation before requesting cancellation.',
+      });
+      const active = status.structuredContent?.foreground?.active;
+      assert.ok(active?.actionId, JSON.stringify(status.structuredContent));
+      cancellation = await client.callTool('cancel_foreground_action', {
+        action_id: active.actionId, reason: 'Verify safe cancellation in an isolated world.',
+        rationale: 'Stop the fixture route and check its final receipt.', response_format: 'json',
+      });
+      assert.equal(cancellation.structuredContent?.response?.data?.state, 'cancellation_requested');
+    } finally {
+      await client.close();
+      await dispatcher.close();
+    }
+    const done = await waitFor(run => run.state !== 'running' || run.activity.filter(event =>
+      event.type === 'tool_execution_end' && event.tool === 'mcp__minecraft__view_status').length >= 2);
+    assert.equal(done.state, 'running', done.detail);
+    const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    const final = events.find(event => event.type === 'tool_execution_end' &&
+      event.tool === 'mcp__minecraft__navigate');
+    assert.equal(final?.isError, true);
+    assert.equal(final?.outcome, 'settled');
+    const resumed = events.filter(event => event.type === 'tool_execution_end' &&
+      event.tool === 'mcp__minecraft__navigate').at(-1);
+    assert.equal(resumed?.isError, false);
+    assert.equal(resumed?.outcome, 'settled');
+    assert.ok(events.some(event => event.type === 'tool_execution_end' &&
+      event.tool === 'mcp__minecraft__view_status' && !event.isError), 'a follow-up status call must run after cancellation');
+    const conversation = (await readdir(directory)).find(name => name.endsWith('.jsonl') && name !== 'activity.jsonl');
+    const transcript = (await readFile(join(directory, conversation), 'utf8')).trim().split('\n').map(JSON.parse);
+    const receipt = transcript.map(entry => entry.message ?? entry).find(message =>
+      message.role === 'toolResult' && message.toolName === 'mcp__minecraft__navigate' &&
+      message.content.some(item => item.text?.includes('**Status:** cancelled')));
+    assert.match(receipt.content.map(item => item.text ?? '').join('\n'), /\*\*Status:\*\* cancelled/i);
     assert.equal((await send(app.port, '/api/stop')).status, 202);
     assert.equal((await terminal()).state, 'stopped');
   }, { hardcore: true }));
@@ -438,6 +515,7 @@ test('Pi can deposit, build, and use both collection modes in Minecraft', smokeO
     consoleCommand(`setblock ${x + 1} ${y} ${z} minecraft:chest`);
     consoleCommand(`setblock ${x + 2} ${y - 1} ${z} minecraft:stone`);
     consoleCommand(`setblock ${x + 2} ${y} ${z} minecraft:air`);
+    consoleCommand(`setblock ${x - 1} ${y - 1} ${z} minecraft:stone`);
     consoleCommand(`setblock ${x} ${y - 1} ${z + 1} minecraft:stone`);
     consoleCommand(`setblock ${x} ${y} ${z + 1} minecraft:diamond_ore`);
     consoleCommand(`setblock ${x - 1} ${y - 1} ${z + 1} minecraft:stone`);

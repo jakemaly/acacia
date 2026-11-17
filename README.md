@@ -11,9 +11,11 @@ Use Linux, Node 24.15+, and Docker Engine 28+ with isolated bridge support. Acce
 ```sh
 npm ci
 docker pull eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817bbceb6b3be94109b4a784d46078099882dda
-docker build -f deploy/Dockerfile -t minecraft-mine-ai:acacia-foreground .
+MINE_AI_FORK_DIR="$HOME/.local/src/mine-ai-mcp" bash deploy/build-private-mcp-image.sh
 npm start
 ```
+
+The build script fetches the pinned private `acacia-compat` commit on the host, verifies it, and stages only its tracked source files for Docker. Git credentials and `.git` never enter the image. The run manifest keeps `revision` for the upstream base and records the private fork repository, fork commit, and image digest separately. The previous `minecraft-mine-ai:acacia-foreground` image remains available for rollback.
 
 Open http://127.0.0.1:2718. The default Pi credential directory is `~/.local/share/minecraft-agent/pi`. To sign in or refresh an expired login, run `PI_CODING_AGENT_DIR="$HOME/.local/share/minecraft-agent/pi" npx --no-install pi` and use `/login` to sign in with ChatGPT. Exit Pi before starting a run. The first run downloads and verifies Mojang’s server JAR. To use an existing verified copy, set `MINECRAFT_SERVER_JAR` to its absolute path.
 
