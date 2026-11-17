@@ -14,8 +14,10 @@ import { defaultPrimitives, minePolicy, recordedDeath } from './primitives.mjs';
 
 const docker = promisify(execFile).bind(null, 'docker');
 const serverImage = 'eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817bbceb6b3be94109b4a784d46078099882dda';
-const mineImage = 'minecraft-mine-ai:de4fef3-primitives';
+const mineImage = 'minecraft-mine-ai:acacia-fork-compat';
 const revision = 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff';
+const forkRepository = 'https://github.com/jakemaly/mine-ai-mcp';
+const forkCommit = '12d55d41f2084dca20eb33451d22f839bf8b7101';
 const jarHash = '4707d00eb834b446575d89a61a11b5d548d8c001';
 const bot = 'Acacia';
 const seed = '97996358';
@@ -117,7 +119,13 @@ export function startRun(config) {
     const event = { time: new Date().toISOString(), type, ...payload };
     try {
       appendFileSync(join(directory, 'activity.jsonl'), `${JSON.stringify(event)}\n`, { mode: 0o600 });
-      if (type !== 'catalogue') run.activity = [...run.activity.slice(-79), event];
+      if (type === 'action_progress') {
+        // Preserve the active tool start even when a long objective spans many polls.
+        run.activity = [...run.activity.filter(previous => previous.type !== type || previous.id !== event.id).slice(-79), event];
+      } else if (type !== 'catalogue') {
+        run.activity = [...run.activity.slice(-79), event];
+      }
+      if (payload.decision) run.decision = payload.decision;
     } catch (failure) {
       fail(new Error(`Could not record run activity: ${failure.message}`));
     }
@@ -139,6 +147,7 @@ export function startRun(config) {
     let ready = false;
     let savedWorld = false;
     let death;
+    let survivalStarted = false;
     let finish;
     const terminal = new Promise(resolve => { finish = resolve; });
     const prompt = new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url);
@@ -146,20 +155,29 @@ export function startRun(config) {
       await mkdir(directory, { mode: 0o700 });
       await Promise.all([world, data, sockets].map(path => mkdir(path, { mode: 0o700 })));
       if (Buffer.byteLength(join(sockets, 'viewer.sock')) >= 108) throw new Error('Run directory is too long for Unix sockets.');
-      const promptText = await readFile(prompt, 'utf8');
+      const [gameplay, decision] = await Promise.all([
+        readFile(prompt, 'utf8'), readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8'),
+      ]);
+      const extraInstructions = decision.trim();
+      const promptText = extraInstructions ? `${gameplay.trimEnd()}\n\n${extraInstructions}` : gameplay;
       const inspected = await docker(['image', 'inspect', config.collection?.runtime?.image ?? mineImage], { timeout: 10_000 });
       const [image] = JSON.parse(inspected.stdout);
-      if (image.Config.Labels?.['org.opencontainers.image.revision'] !== revision) {
-        throw new Error('The Mine AI image does not match the pinned source revision.');
+      const labels = image.Config.Labels ?? {};
+      if (labels['org.opencontainers.image.revision'] !== revision ||
+          labels['org.opencontainers.image.base-revision'] !== revision ||
+          labels['org.opencontainers.image.source'] !== forkRepository ||
+          labels['org.opencontainers.image.fork-revision'] !== forkCommit) {
+        throw new Error('The Mine AI image does not match the pinned private fork and upstream base.');
       }
-      const runtime = { image: image.Id, jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
+      const runtime = { image: image.Id, imageDigest: image.Id, forkRepository, forkCommit,
+        jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
         hardcore, profile, model: modelId, thinkingLevel };
       if (config.collection?.runtime && !isDeepStrictEqual(config.collection.runtime, runtime)) {
         throw new Error('The current Minecraft runtime differs from this collection session.');
       }
       if (config.collection) config.collection.runtime = runtime;
       await writeFile(join(directory, 'run.json.tmp'), JSON.stringify({
-        id, seed, bot, version: '1.21.4', revision, ...runtime,
+        id, seed, bot, version: '1.21.4', revision, forkRepository, forkCommit, imageDigest: image.Id, ...runtime,
         parent: config.parent, collectionSession: config.collection?.id,
       }, null, 2));
       await rename(join(directory, 'run.json.tmp'), join(directory, 'run.json'));
@@ -218,14 +236,30 @@ export function startRun(config) {
           dispatcher, signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]),
         });
         const status = await response.json();
-        if (status.minecraft?.username === bot && (hardcore || collector) && status.minecraft.lastDeath && status.minecraft.lastDeath.observedAt !== death?.observedAt) {
-          death = status.minecraft.lastDeath;
-          record('death', { death });
-          if (hardcore) {
-            finish(death.cause);
-            abort.abort();
-          } else {
-            void collector.death(death);
+        const minecraft = status.minecraft;
+        if (minecraft?.username === bot && (hardcore || collector)) {
+          if (minecraft.gamemode === 'survival') survivalStarted = true;
+          const reportedDeath = minecraft.lastDeath;
+          let newDeath = false;
+          if (reportedDeath && (!death || reportedDeath.observedAt !== death.observedAt)) {
+            death = reportedDeath;
+            newDeath = true;
+          } else if (hardcore && survivalStarted && minecraft.gamemode === 'spectator' && !death) {
+            // Hardcore death changes the player to spectator, even when /health omits lastDeath.
+            death = await recordedDeath(directory).catch(() => null) ?? {
+              observedAt: new Date().toISOString(),
+              cause: 'Acacia entered spectator mode after entering Survival.',
+            };
+            newDeath = true;
+          }
+          if (newDeath) {
+            record('death', { death });
+            if (hardcore) {
+              finish(death.cause);
+              abort.abort();
+            } else {
+              void collector.death(death);
+            }
           }
         }
         if (!status.ok || !status.minecraft?.connected || status.minecraft.username !== bot) return null;
@@ -241,7 +275,7 @@ export function startRun(config) {
         forwards.push(await forward(config.host, config.gamePort, join(directory, 'game.sock'), config.allowed));
         signal.throwIfAborted();
         run.state = 'running';
-        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, prompt, promptText: config.collection && promptText, collectContext: Boolean(collector), actionWaitMs: hardcore ? profile.actionWaitMs : undefined, inference: config.inference });
+        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText, collectContext: Boolean(collector), inference: config.inference });
         const watchdog = async () => {
           let failures = 0;
           while (!signal.aborted) {

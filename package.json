@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
-    "test": "node --test",
+    "test": "node --test test/*.mjs",
     "check": "find src deploy test web -name \"*.mjs\" -exec node --check {} +"
   },
   "dependencies": {

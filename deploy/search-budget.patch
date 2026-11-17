@@ -55,10 +55,10 @@ index d2e279b..2897740 100644
     * How long to keep searching once something is worth committing.
     *
 diff --git a/src/navigation/search/search.test.ts b/src/navigation/search/search.test.ts
-index 0f4ab28..eb458b7 100644
+index 0f4ab28..7c2023d 100644
 --- a/src/navigation/search/search.test.ts
 +++ b/src/navigation/search/search.test.ts
-@@ -178,6 +178,30 @@ test("terminal work competes with travel even when it can start at the root", ()
+@@ -178,6 +178,45 @@ test("terminal work competes with travel even when it can start at the root", ()
    assert.equal(plan.steps.length, 2);
  });
 
@@ -84,6 +84,21 @@ index 0f4ab28..eb458b7 100644
 +  const prefix = expect(line.advance(), "segment_ready");
 +  assert.equal(prefix.evidence.generated, limits.maximumNodes);
 +  assert.equal(prefix.plan.end.x, 11);
++});
++
++test("a fast search without explicit limits still stops at the default node budget", () => {
++  const search = searchOver(
++    goalOf("blocked exits", () => 0),
++    stubCatalogue((state) => {
++      const { x, z } = state.node.feet;
++      return x < 50_000 ? [graphMovement(state, x + 1, z, 1)] : [];
++    }),
++  );
++  const update = search.advance();
++  assert.equal(update.kind, "limit");
++  assert.equal(update.limit.kind, "nodes");
++  assert.equal(update.evidence.generated, 48_000);
++  assert.equal(update.evidence.computeMs, 0);
 +});
 +
  test("incremental A* finds the lowest-cost flat route without mutating its plan", () => {

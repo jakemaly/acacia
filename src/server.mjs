@@ -12,7 +12,7 @@ import { deathReview, readReflection, recordedDeath, reflectDeath, writeReflecti
 
 export async function dashboard({ host, port, root, agentDir, viewerPort, gamePort, allowed, jar, inference, hardcore = false, reflect = reflectDeath }) {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const config = { host, root: await realpath(root), agentDir, viewerPort, gamePort, allowed, jar, inference, hardcore };
+  const config = { host, root: await realpath(root), agentDir, viewerPort, gamePort, allowed, jar, inference };
   const assets = new Map(await Promise.all([
     ['/', 'index.html', 'text/html; charset=utf-8'],
     ['/dashboard.mjs', 'dashboard.mjs', 'text/javascript; charset=utf-8'],
@@ -22,17 +22,20 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   let collection;
   let review;
   let closing = false;
+  const defaultMode = hardcore ? 'hardcore' : 'survival';
   const status = () => run ? {
+    defaultMode,
     id: run.id, state: run.state, detail: run.detail, hardcore: run.hardcore, profile: run.profile, parent: run.parent, death: run.death, activity: run.activity ?? [], player: run.player,
     model: modelId, thinkingLevel, collectionSession: run.collectionSession, checkpoints: run.checkpointStatus?.(),
+    decision: run.state === 'running' ? run.decision : undefined,
     viewer: run.state === 'running' ? run.viewer : null,
     spectator: run.state === 'running' ? run.spectator : null,
-  } : { state: 'idle', activity: [], model: modelId, thinkingLevel };
+  } : { defaultMode, state: 'idle', activity: [], model: modelId, thinkingLevel };
   const active = () => Boolean(review) || ['starting', 'running', 'saving'].includes(run?.state);
 
-  function begin(parent, collect = false) {
+  function begin({ hardcore, parent, collect = false }) {
     if (!parent) collection = collect ? { id: randomUUID().replaceAll('-', '').slice(0, 12) } : undefined;
-    const started = startRun({ ...config, parent, collection });
+    const started = startRun({ ...config, hardcore, parent, collection });
     run = started;
     started.done.then(() => {
       if (started.state === 'dead' && started.hardcore && !closing) schedule(started);
@@ -64,7 +67,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         }
         if (controller.signal.aborted || closing || reflection.stopped) return;
         // Saved reviews are human-readable records, including older files with a proposed profile.
-        begin(ended.id);
+        begin({ hardcore: ended.hardcore, parent: ended.id });
       })().catch(error => {
         ended.detail = `Reflection could not continue: ${error.message}`;
         console.error(error);
@@ -117,10 +120,14 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
       }
     }
     if (request.method === 'POST' && request.headers.origin === origin) {
-      if (request.url === '/api/start' || request.url === '/api/start?collect=1') {
+      const url = new URL(request.url, origin);
+      if (url.pathname === '/api/start') {
         if (closing || active()) return json(409, { error: 'A run is already active.' });
-        if (hardcore && run?.state === 'won') return json(409, { error: 'The Dragon has already been defeated.' });
-        begin(undefined, request.url.endsWith('?collect=1'));
+        const mode = url.searchParams.get('mode') ?? defaultMode;
+        if (mode !== 'hardcore' && mode !== 'survival') return json(400, { error: 'Select Survival or Hardcore.' });
+        const selectedHardcore = mode === 'hardcore';
+        if (selectedHardcore && run?.hardcore && run.state === 'won') return json(409, { error: 'The Dragon has already been defeated.' });
+        begin({ hardcore: selectedHardcore, collect: url.searchParams.get('collect') === '1' });
         return json(202, status());
       }
       if (request.url === '/api/stop') {
@@ -154,7 +161,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   try {
     await recoverRuns(config.root);
     [run] = await savedRuns(config.root);
-    if (hardcore && run?.hardcore && run.state !== 'won') {
+    if (run?.hardcore && run.state !== 'won') {
       const directory = join(config.root, run.id);
       // Recover a win written by vanilla before the launcher saved its result.
       for (const file of ['server/logs/latest.log', 'server.log']) {
@@ -178,7 +185,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
     await recoverCheckpoints(config.root, run).catch(error => {
       console.error(`Could not recover checkpoints: ${error.message}`);
     });
-    const resumeReview = hardcore && run?.hardcore && run.state === 'dead' &&
+    const resumeReview = run?.hardcore && run.state === 'dead' &&
       !(await readReflection(join(config.root, run.id)))?.stopped;
     await new Promise((ready, reject) => server.once('error', reject).listen(port, host, ready));
     if (resumeReview) {

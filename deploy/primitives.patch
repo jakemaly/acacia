@@ -408,3 +408,466 @@ index b2e232f..ac80c86 100644
      for (const override of this.#overrides.values()) {
        const segments = override.path.split(".");
        let target = policy as unknown as Record<string, unknown>;
+diff --git a/src/survival/control/combat/controller.test.ts b/src/survival/control/combat/controller.test.ts
+index 42493c8..17dc0d9 100644
+--- a/src/survival/control/combat/controller.test.ts
++++ b/src/survival/control/combat/controller.test.ts
+@@ -2103,6 +2103,70 @@ test("ends bow combat when a windup outlasts its guard limit", async () => {
+   assert.equal(cancellation.signal.aborted, false);
+ });
+
++test("a held defence cannot renew its guard budget with staggered volleys", async () => {
++  const fixture = blazePreflightFixture(["bow", "arrow", "shield"]);
++  const { bot, target, script } = fixture;
++  Object.assign(bot.entity, { velocity: new Vec3(0, 0, 0), onGround: true });
++  target.metadata = [];
++  const fireball = {
++    id: 8, name: "small_fireball", isValid: true,
++    position: new Vec3(0.5, 65, -5), velocity: new Vec3(0, 0, 0.4),
++  } as Entity;
++  bot.entities[fireball.id] = fireball;
++  const stop = new AbortController();
++  script.onWait = () => {
++    // The gaps permit guard release, but are too short to finish drawing.
++    fireball.isValid = fixture.clock.tick % 16 < 12;
++    if (fixture.clock.tick >= 240) stop.abort("guard never yielded");
++  };
++  const controller = createCombatController(bot, fixture.navigation);
++  const result = await controller.engage(target.id, stop.signal, "hold");
++  assert.equal(result.kind, "unreachable", JSON.stringify(result));
++  assert.equal(result.attacks, 0);
++  assert.equal(stop.signal.aborted, false);
++});
++
++test("a pursuing fight uses an existing refuge when it cannot wait out incoming fire", async () => {
++  const fixture = blazePreflightFixture(["bow", "arrow", "shield"]);
++  const { bot, target, world, script } = fixture;
++  Object.assign(bot.entity, { velocity: new Vec3(0, 0, 0), onGround: true });
++  target.metadata = [];
++  const threat = positionThreat(bot, target);
++  const plan = findCombatPosition(world, bot.entity.position.floored(), [threat], threat, 64)!;
++  for (const cell of plan.placements) world.load(cell, { stateId: 1 });
++  bot.entity.position = plan.fighting.offset(0.5, 0, 0.5);
++  Object.defineProperty(bot, "world", { value: positionWorld(world) });
++  const fireball = {
++    id: 8, name: "small_fireball", isValid: true,
++    position: bot.entity.position.offset(0, 1, -0.5), velocity: new Vec3(0, 0, 0.4),
++  } as Entity;
++  bot.entities[fireball.id] = fireball;
++  let usedCover = false;
++  const navigation = {
++    ...fixture.navigation,
++    navigate: async (options: Parameters<NavigationRuntime["navigate"]>[0]) => {
++      const goal = options.goal.resolve(observation());
++      assert.equal(goal.kind, "active");
++      if (goal.kind !== "active") throw new Error("invalid test goal");
++      const cell = [plan.protected, plan.corner, plan.fighting].find(feet =>
++        goal.isSatisfied({ feet, remainingScaffolds: 0, overlayId: "0" }, world));
++      assert.ok(cell);
++      bot.entity.position = cell.offset(0.5, 0, 0.5);
++      if (cell.equals(plan.protected)) {
++        usedCover = true;
++        fireball.isValid = false;
++      }
++      return { status: "completed", elapsedMs: 1 } as const;
++    },
++  };
++  script.onShot = () => bot.emit("entityDead", target);
++  const stop = new AbortController();
++  script.onWait = () => { if (fixture.clock.tick > 360) stop.abort("fight never used cover"); };
++  const result = await createCombatController(bot, navigation).engage(target.id, stop.signal, "pursue");
++  assert.equal(usedCover, true, JSON.stringify(result));
++  assert.equal(result.kind, "died", JSON.stringify(result));
++});
++
+ test("prefers a usable bow at range and keeps a carried shield in the off hand", async () => {
+   const fixture = combatFixture(["iron_sword", "shield", "bow", "arrow"], { targetDistance: 10 });
+
+diff --git a/src/survival/control/combat/progress.ts b/src/survival/control/combat/progress.ts
+index 524ee41..37242ca 100644
+--- a/src/survival/control/combat/progress.ts
++++ b/src/survival/control/combat/progress.ts
+@@ -48,6 +48,10 @@ export class CombatProgress {
+     this.#startedAt = this.#lastAdvanceAt = atMs;
+   }
+
++  get confirmedTargetHits(): number {
++    return this.#targetHits;
++  }
++
+   milestone(kind: "route_step" | "attack_position" | "protection", identity: string, atMs = Date.now()): void {
+     const key = `${kind}:${identity}`;
+     if (this.#milestones.has(key)) return;
+diff --git a/src/survival/responses/fight/cover.ts b/src/survival/responses/fight/cover.ts
+index 3414ad6..86f04a8 100644
+--- a/src/survival/responses/fight/cover.ts
++++ b/src/survival/responses/fight/cover.ts
+@@ -89,6 +89,15 @@ export class CoverFight {
+     const facts = this.positionFacts();
+     return facts !== null && !facts.atProtection && decideCombatPosition(facts) !== "attack";
+   };
++  readonly takeExistingRefuge = async (signal: AbortSignal): Promise<boolean> => {
++    this.scene.position.adoptExisting();
++    const plan = this.scene.position.plan;
++    if (!plan || this.scene.position.at(plan.protected)) return false;
++    const moved = await this.scene.execution.run("return", () => this.moveWithinCover(plan.protected, signal));
++    if (moved.kind === "arrived" && this.scene.position.protected()) return true;
++    this.scene.position.rejectCover(moved.kind === "failed" ? moved.reason : "Return to cover did not reach protection.");
++    return false;
++  };
+   readonly moveWithinCover = async (
+     cell: Vec3,
+     signal: AbortSignal,
+diff --git a/src/survival/responses/fight/movement.ts b/src/survival/responses/fight/movement.ts
+index d7a2500..2d35da8 100644
+--- a/src/survival/responses/fight/movement.ts
++++ b/src/survival/responses/fight/movement.ts
+@@ -272,6 +272,7 @@ export class FightMovement {
+   };
+   readonly positionEffect = async <T>(
+     effect: (signal: AbortSignal) => Promise<T>,
++    allowAlignedGuard = false,
+   ): Promise<
+     | {
+         readonly kind: "completed";
+@@ -285,7 +286,8 @@ export class FightMovement {
+     const watch = () => {
+       if (impulse.signal.aborted) return;
+       const defence = this.weapons.currentLoadout().shield ? this.weapons.projectileDefence() : null;
+-      if (defence?.imminent) {
++      if (defence?.imminent &&
++          !(allowAlignedGuard && this.weapons.itemUse.shieldRaised && defence.aligned && defence.coversAll)) {
+         this.scene.reportDecision({ kind: "response", evidence: {
+           boundary: "projectile_guard", stage: "position_stop_requested",
+           projectileIds: defence.projectiles.map(({ entity }) => entity.id),
+diff --git a/src/survival/responses/fight/projectile-guard.test.ts b/src/survival/responses/fight/projectile-guard.test.ts
+index fc7f8f9..ace2519 100644
+--- a/src/survival/responses/fight/projectile-guard.test.ts
++++ b/src/survival/responses/fight/projectile-guard.test.ts
+@@ -106,7 +106,8 @@ test("guard returns an aligned visible bow draw to shielded approach", async ()
+   const scene = { bot, target: { id: 8 }, perception: { read: () => [] }, signal: new AbortController().signal,
+     execution: { run: async (_phase: string, effect: () => Promise<boolean>) => effect() },
+     projectileGuards: 0, settled: () => false, footingRecovery: { needed: false },
+-    policy: { combat: { volley_wait_ticks: 100 } }, reportDecision: (event: unknown) => decisions.push(event),
++    policy: { combat: { volley_wait_ticks: 100 } }, heldGuardExhausted: () => false,
++    reportDecision: (event: unknown) => decisions.push(event),
+   } as unknown as FightScene;
+   const weapons = new FightWeapons(scene, { recoverFooting: async () => {}, returnToCover: () => false });
+   Object.assign(weapons, { raiseGuard: async () => {}, projectileDefence: () => ticks < 3 ? {
+diff --git a/src/survival/responses/fight/ranged-turn.ts b/src/survival/responses/fight/ranged-turn.ts
+index f818f7b..09d7cc7 100644
+--- a/src/survival/responses/fight/ranged-turn.ts
++++ b/src/survival/responses/fight/ranged-turn.ts
+@@ -16,6 +16,7 @@ export async function runRangedTurn(
+ ): Promise<CombatOutcome | null> {
+   const shot = await weapons.shoot(loadout.shield);
+   if (shot === "windup_limit") {
++    if (scene.heldGuardExhausted()) return scene.heldGuardLimit();
+     if (scene.movement === "pursue" && scene.position.canEstablish) {
+       const established = await locomotion.positionEffect(cover.establishCover);
+       if (established.kind === "interrupted") return null;
+diff --git a/src/survival/responses/fight/scene.ts b/src/survival/responses/fight/scene.ts
+index 25351c9..65399e4 100644
+--- a/src/survival/responses/fight/scene.ts
++++ b/src/survival/responses/fight/scene.ts
+@@ -64,6 +64,8 @@ export class FightScene implements Disposable {
+   projectileGuards = 0;
+   explosions = 0;
+   elapsedTicks = 0;
++  #heldGuardSince: number | null = null;
++  #heldGuardHits = 0;
+   constructor(
+     readonly environment: FightEnvironment,
+     readonly request: FightRequest,
+@@ -194,6 +196,16 @@ export class FightScene implements Disposable {
+     if (decision.kind === "respond") this.responseRequired.abort("The shared decision selected a different response.");
+   };
+   readonly settled = (): boolean => this.observed !== null || !this.requestedTarget.isValid;
++  readonly heldGuardExhausted = (): boolean => {
++    if (this.movement !== "hold") return false;
++    const { confirmedTargetHits } = this.execution.progress;
++    // A brief gap between arrows does not buy another full stationary guard.
++    if (this.#heldGuardSince === null || confirmedTargetHits !== this.#heldGuardHits) {
++      this.#heldGuardSince = this.elapsedTicks;
++      this.#heldGuardHits = confirmedTargetHits;
++    }
++    return this.elapsedTicks - this.#heldGuardSince >= this.policy.combat.volley_wait_ticks;
++  };
+   readonly reportProgress = (
+     state: "started" | "ended" | CombatProgressChange,
+     outcome: string | null = null,
+@@ -214,6 +226,10 @@ export class FightScene implements Disposable {
+     ...this.result("unreachable"),
+     observation: `Ranged guard did not observe a finished volley within ${this.policy.combat.volley_wait_ticks} ticks.`,
+   });
++  readonly heldGuardLimit = (): CombatOutcome => ({
++    ...this.result("unreachable"),
++    observation: `Stationary guard made no confirmed target damage within ${this.policy.combat.volley_wait_ticks} ticks; the attack needs a different position.`,
++  });
+   readonly roofTargetHostile = () =>
+     isThreat(this.bot, this.requestedTarget, this.perception) ||
+     (this.movement === "pursue" &&
+diff --git a/src/survival/responses/fight/turn.ts b/src/survival/responses/fight/turn.ts
+index e035fd8..ad46568 100644
+--- a/src/survival/responses/fight/turn.ts
++++ b/src/survival/responses/fight/turn.ts
+@@ -49,7 +49,17 @@ export async function runFightTurn(
+       impactInTicks: defence.projectiles.map(({ impactInTicks }) => impactInTicks),
+       coversAll: defence.coversAll, aligned: defence.aligned,
+     } });
+-    if (!(await weapons.guardIncoming())) return scene.guardLimit();
++    if (!(await weapons.guardIncoming())) {
++      if (scene.heldGuardExhausted()) return scene.heldGuardLimit();
++      if (scene.movement === "pursue" && weapons.itemUse.shieldRaised && !weapons.contact() && !scene.position.plan) {
++        // The usual positioning gate stops for incoming shots before moving.
++        // Here an already-ready shield lets us walk to known cover while it
++        // still faces all incoming fire. Footing and crossfire still interrupt.
++        const reposition = await locomotion.positionEffect(cover.takeExistingRefuge, true);
++        if (reposition.kind === "completed" && reposition.value) return null;
++      }
++      return scene.guardLimit();
++    }
+     return null;
+   }
+   // Melee imminence admits the same tactic without a projectile to face. There
+diff --git a/src/survival/responses/fight/weapons.ts b/src/survival/responses/fight/weapons.ts
+index 063e970..624c124 100644
+--- a/src/survival/responses/fight/weapons.ts
++++ b/src/survival/responses/fight/weapons.ts
+@@ -123,6 +123,7 @@ export class FightWeapons {
+       }
+       await this.raiseGuard();
+       for (let tick = 0; tick < this.scene.policy.combat.volley_wait_ticks && !this.scene.settled(); tick++) {
++        if (this.scene.heldGuardExhausted()) return false;
+         const guarded = this.itemUse.shieldRaised;
+         await this.maintainGuard();
+         if (guarded && !this.itemUse.shieldRaised) return true;
+@@ -238,6 +239,7 @@ export class FightWeapons {
+       return await this.itemUse.guardUntil<GuardOutcome>(() => {
+         if (this.scene.settled()) return "fight_ended";
+         if (this.interruptions.returnToCover()) return "return_to_cover";
++        if (this.scene.heldGuardExhausted()) return "windup_limit";
+         if (this.bowWindow(BOW_DRAW_TICKS).safe) {
+           this.scene.execution.progress.volleyFinished();
+           return "volley_finished";
+diff --git a/src/server/async-tools.test.ts b/src/server/async-tools.test.ts
+index e3b202e..1a33f8d 100644
+--- a/src/server/async-tools.test.ts
++++ b/src/server/async-tools.test.ts
+@@ -130,9 +130,13 @@ test("initial waits return typed results or progress, deduplicate retries, and c
+     name: "initial_work", description: "Test initial waiting", inputSchema,
+     resultSchema: actionResultSchema({ count: z.number() }), formatResult: (result) => `Count: ${result.count}`,
+     execution: { kind: "task" }, parse: (input) => inputSchema.parse(input),
+-    execute: async ({ count }) => {
++    execute: async ({ count }, { signal }) => {
+       attempts++;
+       if (count === 1) { started(); await gate; }
++      if (count === 4 && signal) {
++        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
++        signal.throwIfAborted();
++      }
+       return count < 0 ? { status: "failed", count, error: "Observed failure" } : { status: "succeeded", count };
+     },
+   });
+@@ -183,4 +187,10 @@ test("initial waits return typed results or progress, deduplicate retries, and c
+   assert.equal(failed.isError, true);
+   assert.equal(data(failed).state, "settled");
+   assert.equal(service.status().awaitingResult, null, "Delivered failures also release the gate");
++  const bounded = request("bounded", 4, 1000);
++  const timed = await client.callTool({ ...bounded, arguments: { ...bounded.arguments, execution_timeout_ms: 25 } });
++  assert.equal(data(timed).state, "settled");
++  assert.equal(timed.isError, true);
++  assert.match(JSON.stringify(timed.content), /ACTION_EXECUTION_TIMEOUT/);
++  assert.equal(service.status().awaitingResult, null);
+ });
+diff --git a/src/server/async-tools.ts b/src/server/async-tools.ts
+index 9728355..0d9018c 100644
+--- a/src/server/async-tools.ts
++++ b/src/server/async-tools.ts
+@@ -129,11 +129,11 @@ export function registerAsyncTools(server: McpServer, runtime: Runtime, render:
+   }
+
+   for (const action of foreground) register(action.name,
+-    `${action.description} Submits foreground work asynchronously. Supply a unique submission_id; set wait_timeout_ms to return a final result or pending progress in this call, or omit it for an immediate handle. Continue with wait_for_action when needed.`,
++    `${action.description} Submits foreground work asynchronously. Supply a unique submission_id; set wait_timeout_ms to return a final result or pending progress in this call, or omit it for an immediate handle. Set execution_timeout_ms to bound the objective itself. Continue with wait_for_action when needed.`,
+     action.inputSchema.safeExtend(submissionMetadataSchema.shape), z.union([acceptanceSchema, waitSchema(action.outputSchema, progressFor(action))]),
+     async (args, requestId, signal, rationale) => {
+       const metadata = submissionMetadataSchema.parse(args);
+-      const { submission_id: _id, wait_timeout_ms, ...input } = args;
++      const { submission_id: _id, wait_timeout_ms, execution_timeout_ms: _deadline, ...input } = args;
+       const submitted = runtime.asyncActions.submit(action, input, metadata, requestId, rationale);
+       if (submitted.state !== "accepted" || wait_timeout_ms === undefined) return submitted;
+       return wait(submitted.actionId, Number(wait_timeout_ms), signal);
+diff --git a/src/session/action-runner.ts b/src/session/action-runner.ts
+index f02de01..5e9ab21 100644
+--- a/src/session/action-runner.ts
++++ b/src/session/action-runner.ts
+@@ -389,10 +389,10 @@ export class ActionRunner {
+   };
+
+   /** Stop the objective while allowing a reflex to finish its physical release. */
+-  cancelRequest(id: string, reason: string): ForegroundCancellation {
++  cancelRequest(id: string, reason: string, by: "model" | "runtime" = "model"): ForegroundCancellation {
+     const request = this.#admittedRequest;
+     if (!request || request.id !== id) return { kind: "idle", reason };
+-    const abort = new BodyAbort({ kind: "cancelled", by: "model" }, reason);
++    const abort = new BodyAbort({ kind: "cancelled", by }, reason);
+     request.lifetime.abort(abort);
+     request.progress.transition("stopping");
+     if (this.#state.kind === "foreground") this.#state.action.controller.abort(abort);
+@@ -431,8 +431,14 @@ export class ActionRunner {
+
+   #finishedOutput<Name extends string, Result extends ActionResult>(output: ActionOutput<Name, Result>, request: AdmittedRequest): ActionOutput<Name, Result> {
+     const cancellation = request.lifetime.signal.reason;
+-    if (cancellation instanceof BodyAbort && cancellation.detail.kind === "cancelled" && "kind" in output.result && output.result.kind === "runtime_failure") {
+-      output = { ...output, result: { kind: "runtime_failure", status: "cancelled", error: cancellation.message } };
++    if (cancellation instanceof BodyAbort && cancellation.detail.kind === "cancelled") {
++      if ("kind" in output.result && output.result.kind === "runtime_failure") {
++        output = { ...output, result: { kind: "runtime_failure", status: "cancelled", error: cancellation.message } };
++      } else if (cancellation.detail.by === "runtime" && output.result.status !== "succeeded") {
++        // A reflex may have interrupted the executor before the deadline.
++        // Keep its actual result and explain why the objective did not resume.
++        output = { ...output, result: { ...output.result, error: `${output.result.error} ${cancellation.message}` } };
++      }
+     }
+     request.progress.sample(this.#position(), false);
+     const progress = request.progress.finish();
+diff --git a/src/session/async-actions.test.ts b/src/session/async-actions.test.ts
+index 2283321..f6b10a9 100644
+--- a/src/session/async-actions.test.ts
++++ b/src/session/async-actions.test.ts
+@@ -102,6 +102,70 @@ test("targeted cancellation leaves a reflex alive, waits for release, and never
+   }
+ });
+
++test("execution timeout cancels the objective without polling or affecting the next action", async () => {
++  const f = fixture();
++  const accepted = f.service.submit(f.action, {}, { submission_id: "bounded", execution_timeout_ms: 30 }, 1);
++  assert.equal(accepted.state, "accepted");
++  if (accepted.state !== "accepted") return;
++  assert.equal(f.service.submit(f.action, {}, { submission_id: "bounded", execution_timeout_ms: 300 }, 2).state, "refused");
++  assert.equal((await f.service.wait(accepted.actionId, 0)).state, "pending");
++  await pause(80);
++  const result = await f.service.wait(accepted.actionId, 0);
++  assert.equal(result.state, "settled", "the execution expires even when no client is waiting");
++  if (result.state !== "settled") return;
++  assert.equal(result.output.result.status, "cancelled");
++  assert.match("error" in result.output.result ? result.output.result.error ?? "" : "", /\[ACTION_EXECUTION_TIMEOUT\]/);
++  const next = f.service.submit(f.action, {}, { submission_id: "next" }, 3);
++  assert.equal(next.state, "accepted");
++  if (next.state !== "accepted") return;
++  await pause(40);
++  assert.equal((await f.service.wait(next.actionId, 0)).state, "pending");
++  f.finish();
++  assert.equal((await f.service.wait(next.actionId, 1000)).state, "settled");
++});
++
++test("the execution budget expires during a reflex but preserves its safe release and the action evidence", async () => {
++  const runner = new ActionRunner();
++  const service = new AsyncActions(runner, runner.run);
++  let entered!: () => void;
++  const started = new Promise<void>((resolve) => { entered = resolve; });
++  const action = defineAction({
++    name: "collect", description: "Test partial collection", inputSchema: z.object({}),
++    resultSchema: actionResultSchema({ collected: z.number() }), formatResult: (result) => String(result.collected),
++    execution: { kind: "resumable_task" }, parse: () => ({}),
++    begin: () => async ({ signal }) => {
++      entered();
++      await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
++      return { status: "partial", error: "Interrupted during collection.", collected: 1 };
++    },
++  });
++  const accepted = service.submit(action, {}, { submission_id: "partial", execution_timeout_ms: 30 }, 1);
++  assert.equal(accepted.state, "accepted");
++  if (accepted.state !== "accepted") return;
++  await started;
++  let release!: () => void;
++  const safe = new Promise<void>((resolve) => { release = resolve; });
++  const claim = runner.claim("hostile", "Threat nearby", async (signal) => {
++    await safe;
++    assert.equal(signal.aborted, false);
++    return { value: null, continuation: { kind: "resume" } };
++  });
++  assert.equal(claim.kind, "claimed");
++  try {
++    await pause(80);
++    assert.equal((await service.wait(accepted.actionId, 0)).state, "pending");
++  } finally {
++    release();
++  }
++  const result = await service.wait(accepted.actionId, 1000);
++  assert.equal(result.state, "settled");
++  if (result.state !== "settled") return;
++  const output = result.output.result;
++  assert.equal(output.status, "partial");
++  assert.equal("collected" in output && output.collected, 1);
++  assert.match("error" in output ? output.error ?? "" : "", /\[ACTION_EXECUTION_TIMEOUT\]/);
++});
++
+ test("storage failure retains the result gate without repeating physical work", async (t) => {
+   const data = temporaryBotData({ botId: "AsyncBot", closeAfter: t });
+   const store = new ExecutionStore(data, "AsyncBot");
+diff --git a/src/session/async-actions.ts b/src/session/async-actions.ts
+index 31e9e83..8ee94e2 100644
+--- a/src/session/async-actions.ts
++++ b/src/session/async-actions.ts
+@@ -10,6 +10,7 @@ import type { RequestSnapshot } from "./request.js";
+ export const submissionMetadataSchema = z.object({
+   submission_id: z.string().trim().min(1).max(200),
+   wait_timeout_ms: z.number().int().min(0).max(120000).optional().describe("Optionally wait after admission until completion or this timeout. Returns the full result or pending progress. Omit for an immediate accepted handle; zero polls immediately. Timeout or caller cancellation never cancels admitted work."),
++  execution_timeout_ms: z.number().int().positive().max(600000).optional().describe("Maximum wall-clock time for the objective from admission. On expiry it is cancelled and returns after any survival response and cleanup release control. Applies across waits and retries of the same submission."),
+ });
+ export type SubmissionMetadata = z.output<typeof submissionMetadataSchema>;
+ export const waitForActionInputSchema = z.strictObject({ action_id: z.string().min(1), timeout_ms: z.number().int().min(0).max(120000) });
+@@ -40,6 +41,7 @@ interface RecordData {
+   action: string;
+   arguments: unknown;
+   admittedAt: string;
++  executionTimeoutMs?: number;
+   requestId: number;
+   rationale: string | null;
+   resultRetrieved: boolean;
+@@ -123,9 +125,10 @@ export class AsyncActions {
+     catch (error) { return refused("INVALID_ARGUMENTS", reason(error)); }
+     const previous = this.#submissions.get(metadata.submission_id);
+     if (previous) {
+-      return previous.record.action === action.name && isDeepStrictEqual(previous.record.arguments, parsed)
++      return previous.record.action === action.name && isDeepStrictEqual(previous.record.arguments, parsed) &&
++        previous.record.executionTimeoutMs === metadata.execution_timeout_ms
+         ? this.#acceptance(previous.record)
+-        : refused("SUBMISSION_CONFLICT", "This submission_id already identifies different action arguments.");
++        : refused("SUBMISSION_CONFLICT", "This submission_id already identifies different action arguments or a different execution budget.");
+     }
+     if (!this.runner.ownership().connected) return refused("RUNTIME_UNAVAILABLE", "The bot connection has ended.");
+     if (this.#active || this.runner.status().busy) return {
+@@ -140,6 +143,7 @@ export class AsyncActions {
+     const record: RecordData = {
+       actionId: randomUUID(), submissionId: metadata.submission_id, action: action.name,
+       arguments: structuredClone(parsed), admittedAt: new Date().toISOString(), requestId, rationale,
++      executionTimeoutMs: metadata.execution_timeout_ms,
+       resultRetrieved: false, checkpoint: null, terminal: null,
+     };
+     try { this.store?.write([record]); }
+@@ -148,8 +152,14 @@ export class AsyncActions {
+     this.#records.set(record.actionId, admitted);
+     this.#submissions.set(record.submissionId, admitted);
+     this.#active = admitted;
++    const executionStartedAt = performance.now();
+     // Calling run synchronously reserves the physical runner before another admission can interleave.
+     const outcome = this.run(action, input, undefined, requestId, record.actionId);
++    const executionTimeoutMs = record.executionTimeoutMs;
++    const deadline = executionTimeoutMs === undefined ? undefined : setTimeout(() => {
++      this.runner.cancelRequest(record.actionId, `[ACTION_EXECUTION_TIMEOUT] ${record.action} reached its ${executionTimeoutMs} ms execution budget. Inspect the final result before choosing the next action.`, "runtime");
++    }, Math.max(0, executionTimeoutMs - (performance.now() - executionStartedAt)));
++    deadline?.unref();
+     record.checkpoint = this.#live(admitted);
+     admitted.dirty = true;
+     this.#persist(admitted);
+@@ -163,6 +173,7 @@ export class AsyncActions {
+       action: action.name, durationMs: this.runner.progress()?.elapsedMs ?? 0,
+       result: { kind: "runtime_failure", status: "failed", error: `[EXECUTION_FAILED] ${reason(error)}` },
+     })).then((output) => {
++      clearTimeout(deadline);
+       if (this.#checkpointTimer) clearInterval(this.#checkpointTimer);
+       this.#checkpointTimer = null;
+       record.terminal = { output: structuredClone(output) };

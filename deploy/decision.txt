@@ -1,0 +1,3 @@
+Before each tool call, give a concise rationale on two lines:
+Objective: the immediate objective supporting the next unfinished milestone.
+Observation: the relevant fact from the latest status or tool result.

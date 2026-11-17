@@ -1,14 +1,31 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { McpClient, McpConnectionClosedError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
+import { McpClient, McpConnectionClosedError, McpError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { Agent, fetch } from 'undici';
+import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
+import { filterStatusPlayers } from './status-privacy.mjs';
+import { followAction } from './action-wait.mjs';
 
-export const modelId = 'gpt-6.1-terra';
-export const thinkingLevel = 'medium';
+export const modelId = 'gpt-6-luna';
+export const thinkingLevel = 'high';
 const maxContinuationsWithoutAction = 3;
-const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state. Call the next useful Minecraft tool. If a foreground action is pending or its result has not been retrieved, recover that action first.';
+const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state.';
+
+function mcpDisconnected(error) {
+  return error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET' ||
+    (error instanceof McpError && error.code === -32603 && error.message.startsWith('MCP response stream failed:'));
+}
+
+function decisionFromRationale(rationale) {
+  if (typeof rationale !== 'string') return;
+  const fields = rationale.trim().match(/^Objective:([^\r\n]+)\r?\nObservation:([^\r\n]+)\r?\nChange course if:([^\r\n]+)$/i);
+  if (!fields) return;
+  const [objective, observation, changeCourse] = fields.slice(1).map(line => line.trim());
+  if (objective && observation && changeCourse) return { objective, observation, changeCourse };
+}
 
 export async function openai(agentDir) {
   const runtime = await ModelRuntime.create({
@@ -26,13 +43,15 @@ export async function openai(agentDir) {
     return resolution;
   };
   const stream = runtime.streamSimple.bind(runtime);
-  runtime.streamSimple = (target, context, options) => stream(target, context, {
-    ...options, timeoutMs: Math.max(options?.timeoutMs ?? 0, 30 * 60_000),
-  });
+  runtime.streamSimple = (target, context, options) => {
+    // Pi passes a pre-resolved token into compaction. Resolve it through OAuth again for the request.
+    const { apiKey: _apiKey, ...request } = options ?? {};
+    return stream(target, context, { ...request, timeoutMs: Math.max(request.timeoutMs ?? 0, 30 * 60_000) });
+  };
   return { runtime, model };
 }
 
-export async function play({ directory, socket, agentDir, signal, record, prompt: promptFile = new URL('../deploy/prompt.txt', import.meta.url), promptText, collectContext = false, actionWaitMs, inference = openai }) {
+export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false, inference = openai }) {
   const { runtime, model } = await inference(agentDir);
   const dispatcher = new Agent({ connect: { socketPath: socket } });
   let client;
@@ -54,34 +73,49 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     signal.throwIfAborted();
     await connectMcp();
     const catalogue = await client.listTools({ signal });
-    if (catalogue.length !== 37 || catalogue.some(tool => tool.name.startsWith('debug_'))) {
-      throw new Error('Mine AI did not expose the 37 standard tools.');
+    if (catalogue.some(tool => tool.name.startsWith('debug_'))) {
+      throw new Error('Mine AI exposed debug tools to the gameplay session.');
     }
-    const tools = catalogue.map(tool => ({
+    for (const name of ['view_status', 'wait_for_action', 'cancel_foreground_action']) {
+      if (!catalogue.some(tool => tool.name === name)) throw new Error(`Mine AI is missing ${name}.`);
+    }
+    async function callMinecraft(name, args, toolSignal, replayable = false) {
+      try {
+        return await client.callTool(name, args, { signal: toolSignal });
+      } catch (error) {
+        const expired = error instanceof McpSessionExpiredError;
+        const disconnected = mcpDisconnected(error);
+        if (!expired && !disconnected) throw error;
+        signal.throwIfAborted();
+        toolSignal?.throwIfAborted();
+        await client.close();
+        await connectMcp();
+        record('mcp_reconnected', {});
+        // A 404 rejects the call before dispatch. After a dropped connection its outcome is unknown.
+        if (disconnected && !replayable) {
+          throw new Error('Minecraft MCP reconnected. Check view_status and retrieve any pending action before retrying.');
+        }
+        return client.callTool(name, args, { signal: toolSignal });
+      }
+    }
+    const tools = gameTools(catalogue).map(tool => ({
       name: `mcp__minecraft__${tool.name}`,
       label: tool.name,
       description: tool.description,
       parameters: tool.inputSchema,
-      async execute(_id, args, toolSignal) {
-        // The async action keeps its owner and checkpoint after a wait expires.
-        // Bound how long Pi goes without a chance to reconsider the action.
-        const waitKey = tool.name === 'wait_for_action' ? 'timeout_ms' : 'wait_timeout_ms';
-        if (actionWaitMs && args[waitKey] > actionWaitMs) args = { ...args, [waitKey]: actionWaitMs };
-        let result;
-        try {
-          result = await client.callTool(tool.name, args, { signal: toolSignal });
-        } catch (error) {
-          if (!(error instanceof McpSessionExpiredError || error instanceof McpConnectionClosedError)) throw error;
-          signal.throwIfAborted();
-          await client.close();
-          await connectMcp();
-          record('mcp_reconnected', {});
-          // A 404 rejects the call before dispatch. After a dropped connection its outcome is unknown.
-          if (error instanceof McpConnectionClosedError) {
-            throw new Error('Minecraft MCP reconnected. Check view_status and retrieve any pending action before retrying.');
-          }
-          result = await client.callTool(tool.name, args, { signal: toolSignal });
-        }
+      async execute(id, args, toolSignal) {
+        const compactStatus = tool.name === 'view_status' && args.detail !== 'full' && args.response_format !== 'json';
+        args = gameArguments(tool, args);
+        const target = tool.target ?? tool.name;
+        const rawResult = tool.foreground
+          ? await followAction({ name: target, args: { ...args, submission_id: randomUUID() },
+            executionLimit: tool.executionLimit,
+            call: (name, params) => callMinecraft(name, params, toolSignal, true),
+            isTransportFailure: error => mcpDisconnected(error) || error instanceof McpSessionExpiredError,
+            onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
+          })
+          : await callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
+        const result = tool.name === 'view_status' ? filterStatusPlayers(rawResult) : rawResult;
         const response = result.structuredContent?.response;
         // Polling or retrieving an old result again does not make progress.
         const completed = response?.data?.output?.action ? response.data.actionId
@@ -91,14 +125,21 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
           continuationsWithoutAction = 0;
         }
         const { _meta, ...details } = result;
+        const compact = compactStatus && !result.isError && statusContent(result.structuredContent);
+        if (compact) return { content: compact, details, isError: false };
         const content = toLlmContent(result);
-        if (result.content.length && result.structuredContent?.response?.format === 'json') {
+        if (result.content.length && result.structuredContent?.response?.format === 'json' &&
+            (!result.structuredContent.handoff || args.response_format === 'json')) {
           content.push({ type: 'text', text: JSON.stringify(result.structuredContent) });
         }
         return { content, details, isError: result.isError };
       },
     }));
-    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off' });
+    const settingsManager = SettingsManager.inMemory({
+      // Leave room to summarize the transcript and for provider request overhead.
+      compaction: { enabled: true, reserveTokens: Math.floor(model.contextWindow * 0.4) },
+      cacheWarming: 'off',
+    });
     const resourceLoader = new DefaultResourceLoader({
       cwd: directory, agentDir, settingsManager, noExtensions: true, noSkills: true,
       noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: [], systemPrompt: client.instructions,
@@ -112,7 +153,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     // A wait and its successor must reach Mine AI in the order Pi emitted them.
     session.agent.toolExecution = 'sequential';
     if (session.getActiveToolNames().sort().join() !== tools.map(tool => tool.name).sort().join()) {
-      throw new Error('Pi did not activate the exact Mine AI tool catalogue.');
+      throw new Error('Pi did not activate the configured Minecraft tools.');
     }
     record('catalogue', { tools: catalogue, model: model.id, contextWindow: model.contextWindow });
     if (collectContext) {
@@ -125,14 +166,19 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
       });
     }
     session.subscribe(event => {
+      if (event.type === 'compaction_end') {
+        record(event.type, { reason: event.reason, tokensBefore: event.result?.tokensBefore,
+          tokensAfter: event.result?.estimatedTokensAfter, willRetry: event.willRetry, errorMessage: event.errorMessage });
+      }
       if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
-        const response = event.result?.details?.structuredContent?.response;
+        const { response, handoff } = event.result?.details?.structuredContent ?? {};
         const markdown = response?.markdown ?? '';
-        const actionId = response?.data?.actionId ?? markdown.match(/^Action ID: ([a-f0-9-]+)$/m)?.[1];
-        const outcome = response?.data?.state ?? (markdown.startsWith('**Accepted:**') ? 'accepted'
+        const actionId = handoff?.actionId ?? response?.data?.actionId ?? markdown.match(/^Action ID: ([a-f0-9-]+)$/m)?.[1];
+        const outcome = (handoff && 'pending') ?? response?.data?.state ?? (markdown.startsWith('**Accepted:**') ? 'accepted'
           : markdown.startsWith('## Action in progress') ? 'pending'
           : actionId ? 'settled' : undefined);
-        record(event.type, { id: event.toolCallId, tool: event.toolName, isError: event.isError, actionId, outcome });
+        const decision = event.type === 'tool_execution_start' ? decisionFromRationale(event.args?.rationale) : undefined;
+        record(event.type, { id: event.toolCallId, tool: event.toolName, isError: event.isError, actionId, outcome, decision });
       }
       if (event.type === 'message_end' && event.message.role === 'assistant') {
         lastReply = event.message;
@@ -142,7 +188,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     });
     signal.addEventListener('abort', stop, { once: true });
     signal.throwIfAborted();
-    let prompt = promptText ?? await readFile(promptFile, 'utf8');
+    let prompt = promptText;
     for (;;) {
       signal.throwIfAborted();
       lastReply = undefined;

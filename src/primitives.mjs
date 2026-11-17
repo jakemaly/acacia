@@ -13,7 +13,6 @@ export const defaultPrimitives = Object.freeze({
   volleyWaitTicks: 100,
   coverWhenExposed: false,
   hostileAvoidance: 1,
-  actionWaitMs: 15_000,
 });
 
 export function minePolicy(profile) {

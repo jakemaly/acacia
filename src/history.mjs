@@ -11,7 +11,8 @@ export async function savedRuns(root) {
     const directory = join(root, name);
     try {
       const manifest = join(directory, 'run.json');
-      const { seed, model, thinkingLevel, hardcore, profile, parent, collectionSession, image, jarHash, promptSha256 } = JSON.parse(await readFile(manifest, 'utf8'));
+      const { seed, model, thinkingLevel, hardcore, profile, parent, collectionSession, image, imageDigest,
+        forkRepository, forkCommit, jarHash, promptSha256 } = JSON.parse(await readFile(manifest, 'utf8'));
       const date = (await stat(manifest)).mtime.toISOString();
       const result = await readFile(join(directory, 'result.json'), 'utf8').then(JSON.parse, error => {
         if (error.code !== 'ENOENT') throw error;
@@ -22,7 +23,7 @@ export async function savedRuns(root) {
         return { error: 'The saved death review is unreadable.' };
       }) : undefined;
       return { id: name, date, seed, model, thinkingLevel, hardcore, profile, parent, reflection, collectionSession,
-        runtime: { image, jarHash, promptSha256, hardcore, profile, model, thinkingLevel },
+        runtime: { image, imageDigest, forkRepository, forkCommit, jarHash, promptSha256, hardcore, profile, model, thinkingLevel },
         death: result.death, interrupted: result.interrupted, state: result.state, detail: result.detail, player: result.player };
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
