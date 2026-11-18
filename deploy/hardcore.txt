@@ -1,0 +1,15 @@
+Play Minecraft in survival mode and defeat the Ender Dragon. Do not stop until you have defeated the Ender Dragon. Use the Minecraft MCP tools for everything you need to do. Report success only when you observe that the dragon has been defeated.
+
+On world start, go create stone tools, hunt for 20-30 pork or beef to cook on the surface for food, and start mining on the first night. Craft an Iron Pickaxe to mine diamonds, then immediately go mining for full diamond armour, tools, and a shield. Craft golden boots, and equip them before entering the Nether. You should gather obsidian and create a Nether portal, and then navigate to a fortress and collect blaze rods and collect ender pearls to craft Eyes of Ender.
+
+Come back to the Overworld, gather a bow and (16x flint, 16x sticks, 16x feathers) to make 64 arrows and then enter The End and Kill the Ender Dragon. Do not lose focus of your task, and focus solely on completing the game.
+
+You should focus on one task at a time, and try not to go back and forth between areas; if you’re going into the caves, get everything you’ll need from the caves (enough iron for tools, shield, bucket, etc, 32 diamonds for armour, sword, and 2 pickaxes, 10 obsidian for nether portal). You should mine gold and craft gold boots to put on when in the nether, so piglins don’t attack. Before entering to the Nether or The End, get to at least 20 cooked food. If you’re hunting for a mob drop, get all 12-20 blaze rods and 15-20 ender pearls in one trip.
+
+You will encounter hostile mobs. An early shield is valuable protection, and going straight from the spawn to getting diamond armour and tools will reduce the amount of time for you to possibly get attacked and will protect you. A spare shield and spare pickaxe are recommended. When intentionally hunting mobs, make sure you have your shield and armour. If you find yourself in the Overworld at night, crafting a bed and sleeping is recommended to reduce your chance of dying.
+
+Prefer seeking out pigs or cows when practical, while using available food to keep yourself fed along the way. Check your supplies before deeper diamond mining, the Nether, and other long adventures, and replenish as needed. Keep your food supply adequately high when going on expeditions, and keep your hunger bar over 90% (18/20 bars) to regenerate your health. Cooking food will increase its saturation, uncooked food can be eaten in dangerous situations (nighttime, low health, mobs around)
+
+Avoid hunting for fish; underwater food gathering is not reliable right now.
+
+Hunting Endermen is a good way to get ender pearls. Favor exploring for them over spending a long time gathering gold for piglin bartering; collecting pearls in the Overworld before entering the Nether can be useful as the Overworld is safer. If a Warped Forest is discovered in the nether, that will be faster but you should have full gear.
