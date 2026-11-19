@@ -136,6 +136,7 @@ export function startRun(config) {
   async function execute() {
     const world = join(directory, 'server');
     const data = join(directory, 'bot');
+    const recording = join(directory, 'recording');
     const forwards = [];
     const label = owner(config.root);
     const common = [
@@ -153,7 +154,7 @@ export function startRun(config) {
     const prompt = new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url);
     try {
       await mkdir(directory, { mode: 0o700 });
-      await Promise.all([world, data, sockets].map(path => mkdir(path, { mode: 0o700 })));
+      await Promise.all([world, data, recording, sockets].map(path => mkdir(path, { mode: 0o700 })));
       if (Buffer.byteLength(join(sockets, 'viewer.sock')) >= 108) throw new Error('Run directory is too long for Unix sockets.');
       const [gameplay, decision] = await Promise.all([
         readFile(prompt, 'utf8'), readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8'),
@@ -224,8 +225,9 @@ export function startRun(config) {
       }));
       await waitFor(() => ready, serverExit);
       ({ done: mineExit } = launch('mine-ai', [
-        ...common, '--name', mineName, '--memory', '2g', '--cpus', '2', '--pids-limit', '128',
-        '-v', `${data}:/data:rw`, '-v', `${sockets}:/sockets:rw`, '-e', 'HOME=/data', '-e', `MINECRAFT_BOT=${bot}`,
+        ...common, '--name', mineName, '--memory', '3g', '--cpus', '2', '--pids-limit', '512',
+        '-v', `${data}:/data:rw`, '-v', `${recording}:/recording:rw`, '-v', `${sockets}:/sockets:rw`,
+        '-e', 'HOME=/data', '-e', `MINECRAFT_BOT=${bot}`, '-e', 'MINE_AI_RECORDING_DIR=/recording',
         '-e', `MINE_AI_BASE_POLICY=${JSON.stringify(minePolicy(profile))}`, image.Id,
       ]));
       const mcp = join(directory, 'mcp.sock');
@@ -302,7 +304,15 @@ export function startRun(config) {
         const settled = await Promise.race([agent.then(() => true, () => true), delay(5000, false, { ref: false })]);
         if (!settled) error ??= 'Pi did not stop promptly.';
       }
-      if (mineExit) await stopContainer(mineName, mineExit);
+      if (mineExit) {
+        try {
+          const recordingStatus = await requestRecordingStop(recording);
+          if (recordingStatus?.state === 'failed') console.error(`[recording] ${recordingStatus.error}`);
+        } catch (failure) {
+          console.error(`[recording] Could not request finalization: ${failure.message}`);
+        }
+        await stopContainer(mineName, mineExit, 45);
+      }
       if (serverExit) {
         server.stdin.end('stop\n');
         const saved = await Promise.race([serverExit, delay(25_000, false, { ref: false })]);
@@ -373,15 +383,35 @@ export function startRun(config) {
       return true;
     }
 
-    async function stopContainer(name, done) {
+    async function stopContainer(name, done, graceSeconds = 12) {
       try {
-        await docker(['stop', '-t', '12', name], { timeout: 20_000 });
+        await docker(['stop', '-t', String(graceSeconds), name], { timeout: (graceSeconds + 8) * 1000 });
       } catch (failure) {
         const gone = await Promise.race([done, delay(1000, false, { ref: false })]);
         if (!gone) error ??= failure.message;
       }
       if (!await Promise.race([done, delay(3000, false, { ref: false })])) {
         error ??= `Docker did not release ${name} after stop.`;
+      }
+    }
+
+    async function requestRecordingStop(directory) {
+      const request = join(directory, 'stop.request');
+      try {
+        await writeFile(request, '', { flag: 'wx', mode: 0o600 });
+        for (let attempt = 0; attempt < 100; attempt++) {
+          try {
+            const status = JSON.parse(await readFile(join(directory, 'recording.json'), 'utf8'));
+            if (status.state === 'complete' || status.state === 'failed') return status;
+          } catch (failure) {
+            if (failure.code !== 'ENOENT') throw failure;
+            if (attempt >= 10) return null;
+          }
+          await delay(200);
+        }
+        return null;
+      } finally {
+        await rm(request, { force: true });
       }
     }
 

@@ -32,6 +32,8 @@ The service reads `~/.config/minecraft-mine-ai.env`; set `MINECRAFT_HOST` and `M
 
 Each attempt writes its manifest, Pi JSONL session, activity, server log and world, and Mine AI SQLite data under `~/.local/share/mine-ai`. A new run always gets a new directory. If the model ends early, Pi prompts it again in the same session. Three follow-ups without a newly completed action end the attempt as incomplete. Pi reconnects expired MCP sessions in place. Terminal provider errors and operator stops end the attempt.
 
+Every run also records the bot’s first-person view to `recording/recording.webm` in that run directory. Recording begins when the bot spawns and ends when the run stops; Survival deaths and respawns remain in the same video. `recording/recording.json` reports completion or a nonfatal recording error. Recordings stay with the run and are not pruned automatically.
+
 ## Hardcore
 
 Set `MINECRAFT_HARDCORE=1` to default new dashboard and API starts to Hardcore. API callers can select the mode with `POST /api/start?mode=hardcore` or `POST /api/start?mode=survival`. Hardcore uses Java Hard difficulty, gives the model the [expedition and recovery instructions](deploy/hardcore.txt), and ends the attempt on a server death. A separate model call reviews recent game evidence and saves a short diagnosis, evidence, uncertainty, and a question for the maintainer. Open the finished attempt under **Runs** to read its death review, or read `reflection.json` in the run directory. The dashboard starts a fresh Hardcore world on the same seed with the baseline settings, even if the review fails. The next run records its settings and the previous run ID in `run.json`. Reviews are available to the maintainer and stay outside the gameplay context.

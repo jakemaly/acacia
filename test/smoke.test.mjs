@@ -316,7 +316,7 @@ async function attempt(scenario, verify, options) {
 }
 
 test('a premature final reply continues the run and stale results do not extend retries', smokeOptions, () =>
-  attempt('continue', async ({ run, gamePort, terminal, consoleCommand }) => {
+  attempt('continue', async ({ run, gamePort, directory, terminal, consoleCommand }) => {
     consoleCommand('gamerule doMobSpawning false');
     consoleCommand('gamerule fallDamage false');
     consoleCommand('forceload add -64 -16 80 16');
@@ -334,6 +334,10 @@ test('a premature final reply continues the run and stale results do not extend 
     await assert.rejects(fetch(`http://${host}:25575/health`));
     const final = await terminal();
     assert.equal(final.state, 'incomplete');
+    const recording = JSON.parse(await readFile(join(directory, 'recording/recording.json'), 'utf8'));
+    assert.equal(recording.state, 'complete');
+    const video = await readFile(join(directory, 'recording/recording.webm'));
+    assert.deepEqual([...video.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     const earlyFinal = final.activity.findIndex(event => event.type === 'assistant' && event.stopReason === 'stop');
     const settled = final.activity.findIndex(event => event.type === 'tool_execution_end' &&
       event.tool === 'mcp__minecraft__wait_for_action' && event.outcome === 'settled' && !event.isError);

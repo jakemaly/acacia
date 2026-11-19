@@ -3,6 +3,7 @@
   "private": true,
   "dependencies": {
     "@napi-rs/canvas": "1.0.13",
+    "puppeteer-core": "25.18.1",
     "prismarine-viewer": "1.33.0"
   }
 }
