@@ -26,7 +26,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   const defaultMode = hardcore ? 'hardcore' : 'survival';
   const status = () => run ? {
     defaultMode,
-    id: run.id, state: run.state, detail: run.detail, hardcore: run.hardcore, profile: run.profile, parent: run.parent, death: run.death, activity: run.activity ?? [], player: run.player,
+    id: run.id, seed: run.seed, state: run.state, detail: run.detail, hardcore: run.hardcore, profile: run.profile, parent: run.parent, death: run.death, activity: run.activity ?? [], player: run.player,
     model: modelId, thinkingLevel, collectionSession: run.collectionSession, checkpoints: run.checkpointStatus?.(),
     decision: run.state === 'running' ? run.decision : undefined,
     viewer: run.state === 'running' ? run.viewer : null,

@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, appendFileSync, createWriteStream } from 'node:fs';
 import { link, lstat, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
@@ -20,7 +20,6 @@ const forkRepository = 'https://github.com/jakemaly/mine-ai-mcp';
 const forkCommit = 'a8ca9f9cfacd33be12448a4a55f97cc210a37b56';
 const jarHash = '4707d00eb834b446575d89a61a11b5d548d8c001';
 const bot = 'Acacia';
-const seed = '97996358';
 const advancement = 'minecraft:end/kill_dragon';
 const owner = root => `minecraft-mine-ai=${root}`;
 
@@ -87,6 +86,7 @@ function forward(host, port, path, allowed) {
 
 export function startRun(config) {
   const id = randomUUID().replaceAll('-', '').slice(0, 12);
+  const seed = randomBytes(8).readBigInt64BE().toString();
   const directory = join(config.root, id);
   const hardcore = config.hardcore === true;
   const profile = defaultPrimitives;

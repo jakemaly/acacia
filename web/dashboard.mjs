@@ -224,6 +224,7 @@ function renderStatus() {
   }
   const hardcore = active ? run.hardcore : mode.value === 'hardcore';
   $('difficulty').textContent = hardcore ? 'Hard (Hardcore)' : 'Normal';
+  $('world-seed').textContent = run.seed ?? 'Random on start';
   mode.hidden = active;
   mode.disabled = !run.state || active || controlPending;
   $('start').disabled = mode.disabled || (hardcore && run.hardcore && run.state === 'won');
