@@ -28,11 +28,19 @@ systemctl --user daemon-reload
 systemctl --user enable --now minecraft-agent.service
 ```
 
+From another machine over SSH, replace `SERVER_TAILSCALE_IP` with the dashboard host’s configured `MINECRAFT_HOST` and `SSH_HOST` with its SSH hostname. Then open the local address in a browser:
+
+```sh
+ssh -N -L 2718:SERVER_TAILSCALE_IP:2718 SSH_HOST
+```
+
+Open **Runs** in the dashboard to play or download a saved WebM.
+
 The service reads `~/.config/minecraft-mine-ai.env`; set `MINECRAFT_HOST` and `MINECRAFT_CLIENT_TAILSCALE_IP` there to the server and operator addresses. The default ports are 2718 for the dashboard, 3000 for the viewer, and 25565 for Minecraft. Keep the corresponding tailnet grants. MCP crosses the sandbox on a private Unix socket. Docker runs the game and bot with an isolated bridge, read-only roots, dropped capabilities, resource limits, and per-run writable mounts.
 
 Each attempt writes its manifest, Pi JSONL session, activity, server log and world, and Mine AI SQLite data under `~/.local/share/mine-ai`. A new run always gets a new directory. If the model ends early, Pi prompts it again in the same session. Three follow-ups without a newly completed action end the attempt as incomplete. Pi reconnects expired MCP sessions in place. Terminal provider errors and operator stops end the attempt.
 
-Every run also records the bot’s first-person view to `recording/recording.webm` in that run directory. Recording begins when the bot spawns and ends when the run stops; Survival deaths and respawns remain in the same video. `recording/recording.json` reports completion or a nonfatal recording error. Recordings stay with the run and are not pruned automatically.
+Every run also records the bot’s first-person view to `recording/recording.webm` in that run directory. Recording begins when the bot spawns and ends when the run stops; Survival deaths and respawns remain in the same video. Open a saved run in **Runs** to play or download its recording. `recording/recording.json` reports completion or a nonfatal recording error. Recordings stay with the run and are not pruned automatically.
 
 ## Hardcore
 

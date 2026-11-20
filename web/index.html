@@ -109,6 +109,10 @@
     .run-library-meta,.run-library-empty { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
     .run-detail-content { min-height:0; flex:1; overflow:auto; padding:8px 2px 16px; scrollbar-color:var(--line) var(--bg); }
     .run-detail-heading { margin:8px 0 2px; font-size:16px; font-weight:620; }
+    .run-recording { display:grid; gap:7px; margin:12px 0; }
+    .run-recording video { display:block; width:100%; max-height:240px; background:#000; }
+    .run-recording video[hidden] { display:none; }
+    .run-recording a { width:max-content; color:var(--green); }
     .run-detail-facts { display:grid; grid-template-columns:80px minmax(0,1fr); gap:4px 10px; margin:8px 0 14px; color:var(--muted); font-size:12px; }
     .run-detail-facts dt { color:var(--muted); }
     .run-detail-facts dd { min-width:0; margin:0; color:var(--text); overflow-wrap:anywhere; }

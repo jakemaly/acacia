@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { dragonAdvancement, recoverRuns, startRun } from './run.mjs';
 import { conversation, runId, savedRuns } from './history.mjs';
+import { recoverInterruptedRecordings, serveRecording } from './recordings.mjs';
 import { modelId, thinkingLevel } from './pi.mjs';
 import { recoverCheckpoints } from './checkpoints.mjs';
 import { deathReview, readReflection, recordedDeath, reflectDeath, writeReflection } from './primitives.mjs';
@@ -84,10 +85,16 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
       response.end(JSON.stringify(value));
     };
     const origin = `http://${host}:${server.address().port}`;
-    if (!allowed.has(request.socket.remoteAddress) || request.headers.host !== new URL(origin).host) {
+    const port = server.address().port;
+    const hostHeader = request.headers.host;
+    const forwardedHosts = ['localhost', '127.0.0.1', '[::1]'];
+    const forwardedHost = forwardedHosts.some(name => hostHeader === `${name}:${port}`);
+    const forwardedOrigin = forwardedHosts.some(name => request.headers.origin === `http://${name}:${port}`);
+    if (!allowed.has(request.socket.remoteAddress) ||
+        (hostHeader !== new URL(origin).host && !forwardedHost)) {
       return json(403, { error: 'Dashboard access is restricted.' });
     }
-    if (request.method === 'GET') {
+    if (request.method === 'GET' || request.method === 'HEAD') {
       const asset = assets.get(request.url);
       if (asset) {
         response.writeHead(200, {
@@ -105,6 +112,9 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
           if (active()) return json(200, runs.map(saved => saved.id === run.id ? { ...saved, ...status() } : saved));
           return json(200, runs);
         }
+        if (url.pathname === '/api/recording') {
+          return await serveRecording(config.root, url.searchParams.get('id'), request, response);
+        }
         if (url.pathname === '/api/conversation') {
           const id = url.searchParams.get('id');
           const before = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : undefined;
@@ -119,7 +129,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         return json(500, { error: 'Could not read saved run data.' });
       }
     }
-    if (request.method === 'POST' && request.headers.origin === origin) {
+    if (request.method === 'POST' && (request.headers.origin === origin || forwardedOrigin)) {
       const url = new URL(request.url, origin);
       if (url.pathname === '/api/start') {
         if (closing || active()) return json(409, { error: 'A run is already active.' });
@@ -160,6 +170,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   await new Promise((ready, reject) => lock.once('error', reject).listen(lockPath, ready));
   try {
     await recoverRuns(config.root);
+    await recoverInterruptedRecordings(config.root);
     [run] = await savedRuns(config.root);
     if (run?.hardcore && run.state !== 'won') {
       const directory = join(config.root, run.id);

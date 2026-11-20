@@ -447,8 +447,31 @@ async function showRun(saved) {
     <dl class="run-detail-facts"><dt>Status</dt><dd>${esc(title(saved.state))}</dd>
       <dt>Seed</dt><dd>${esc(saved.seed)}</dd><dt>Model</dt><dd>${esc(saved.model)}</dd>
       <dt>Reasoning</dt><dd>${esc(title(saved.thinkingLevel))}</dd></dl>
+    <section class="run-recording" aria-label="First-person recording">
+      <div class="run-library-meta">First-person recording</div>
+      <p id="saved-recording-status" class="run-library-meta">Checking recording…</p>
+      <video id="saved-recording" controls playsinline preload="metadata" hidden></video>
+      <a id="download-recording" hidden>Download WebM</a>
+    </section>
     <p class="run-library-meta">${esc(saved.detail)}</p>${reviewMarkup}<button id="saved-more" class="load-more" hidden>Load older activity</button>
     <div id="saved-messages" class="run-detail-timeline"></div>`;
+  const recordingUrl = `/api/recording?id=${encodeURIComponent(saved.id)}`;
+  try {
+    const response = await fetch(recordingUrl, { method: 'HEAD' });
+    if (selected !== saved.id) return;
+    if (response.ok) {
+      $('saved-recording').src = recordingUrl;
+      $('saved-recording').hidden = false;
+      $('download-recording').href = recordingUrl;
+      $('download-recording').download = `${saved.id}.webm`;
+      $('download-recording').hidden = false;
+      $('saved-recording-status').hidden = true;
+    } else {
+      $('saved-recording-status').textContent = 'No playable recording is available for this run.';
+    }
+  } catch {
+    if (selected === saved.id) $('saved-recording-status').textContent = 'Could not load this recording.';
+  }
   const entries = [];
   async function load(cursor) {
     try {

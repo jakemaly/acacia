@@ -35,12 +35,11 @@ async function waitForViewer(url) {
   throw new Error('The Prismarine viewer did not start listening for Chromium.');
 }
 
-async function finalizeWebm(filename, frameRate) {
+async function finalizeWebm(filename) {
   const output = `${filename}.final.webm`;
   const encoder = spawn('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y', '-i', filename,
-    '-map', '0:v:0', '-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '8',
-    '-b:v', '1500k', '-r', String(frameRate), '-g', String(frameRate * 2), '-pix_fmt', 'yuv420p', output,
+    '-map', '0:v:0', '-c:v', 'copy', output,
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
   let log = '';
   encoder.stderr.on('data', chunk => { log = `${log}${chunk}`.slice(-2000); });
@@ -137,7 +136,7 @@ export async function createBrowserRecording({ output, width, height, url }) {
           file.end();
           await finished(file);
           closingBrowser = true;
-          await finalizeWebm(output, framesPerSecond);
+          await finalizeWebm(output);
           if (!closed) {
             closed = true;
             recorder.emit('close', 0, null);
