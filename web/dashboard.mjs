@@ -124,13 +124,16 @@ function renderActionIcon(call) {
 
 function renderDecision(rationale) {
   const panel = $('current-rationale');
-  const raw = typeof rationale === 'string' ? rationale.trim() : '';
-  const normalized = raw.replace(/\s+/g, ' ');
-  const change = /\s+Change(?: course)?(?: if)?:[\s\S]*$/i;
-  const fields = normalized.match(/^Objective:\s*(.+?)\s+Observation:\s*(.+?)(?:\s+Change(?: course)?(?: if)?:.*)?$/i);
-  const value = fields?.[1]?.trim() && fields[2]?.trim()
-    ? `Objective: ${fields[1].trim()}\nObservation: ${fields[2].trim()}`
-    : raw.replace(change, '').trim();
+  const objective = typeof rationale?.objective === 'string' ? rationale.objective.trim() : '';
+  const observation = typeof rationale?.observation === 'string' ? rationale.observation.trim() : '';
+  const raw = typeof rationale === 'string' ? rationale.trim()
+    : typeof rationale?.text === 'string' ? rationale.text.trim() : '';
+  const fields = raw.match(/^Objective:\s*([^\r\n]+)\r?\nObservation:\s*([^\r\n]+)/i);
+  const value = objective && observation
+    ? `Objective: ${objective}\nObservation: ${observation}`
+    : fields?.[1]?.trim() && fields[2]?.trim()
+      ? `Objective: ${fields[1].trim()}\nObservation: ${fields[2].trim()}`
+      : raw.replace(/\s+Change(?: course)?(?: if)?:[\s\S]*$/i, '').trim();
   panel.hidden = !value;
   if (panel.textContent !== value) panel.textContent = value;
 }
@@ -280,7 +283,9 @@ function renderStatus() {
     detail ? `${label} · ${detail}` : label);
   const latestCall = latestToolCall();
   const currentCall = run.state === 'running' ? latestCall : undefined;
-  renderDecision(currentCall?.args?.rationale);
+  const currentEvent = currentCall && run.activity?.findLast(event =>
+    event.type === 'tool_execution_start' && event.id === currentCall.id);
+  renderDecision(currentEvent?.decision ?? run.decision ?? currentCall?.args?.rationale);
   renderActionIcon(currentCall);
   renderHealth();
 }

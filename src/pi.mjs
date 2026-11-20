@@ -19,12 +19,22 @@ function mcpDisconnected(error) {
     (error instanceof McpError && error.code === -32603 && error.message.startsWith('MCP response stream failed:'));
 }
 
-function decisionFromRationale(rationale) {
-  if (typeof rationale !== 'string') return;
-  const fields = rationale.trim().match(/^Objective:([^\r\n]+)\r?\nObservation:([^\r\n]+)\r?\nChange course if:([^\r\n]+)$/i);
-  if (!fields) return;
-  const [objective, observation, changeCourse] = fields.slice(1).map(line => line.trim());
-  if (objective && observation && changeCourse) return { objective, observation, changeCourse };
+function assistantText(message) {
+  if (typeof message?.text === 'string') return message.text;
+  if (!Array.isArray(message?.content)) return '';
+  return message.content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n');
+}
+
+function decisionFromRationale(rationale, reply) {
+  const text = assistantText(reply).trim();
+  const fields = text.match(/^Objective:\s*([^\r\n]+)\r?\nObservation:\s*([^\r\n]+)$/i);
+  if (fields) {
+    const [objective, observation] = fields.slice(1).map(line => line.trim());
+    if (objective && observation) return { objective, observation };
+  }
+  const fallback = typeof rationale === 'string' ? rationale.trim() : '';
+  return fallback ? { text: fallback } : undefined;
 }
 
 export async function openai(agentDir) {
@@ -177,7 +187,8 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         const outcome = (handoff && 'pending') ?? response?.data?.state ?? (markdown.startsWith('**Accepted:**') ? 'accepted'
           : markdown.startsWith('## Action in progress') ? 'pending'
           : actionId ? 'settled' : undefined);
-        const decision = event.type === 'tool_execution_start' ? decisionFromRationale(event.args?.rationale) : undefined;
+        const decision = event.type === 'tool_execution_start'
+          ? decisionFromRationale(event.args?.rationale, lastReply) : undefined;
         record(event.type, { id: event.toolCallId, tool: event.toolName, isError: event.isError, actionId, outcome, decision });
       }
       if (event.type === 'message_end' && event.message.role === 'assistant') {
