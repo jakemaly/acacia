@@ -14,10 +14,17 @@ export async function recoverInterruptedRecordings(root) {
   for (const entry of entries) {
     if (!entry.isDirectory() || !runId.test(entry.name)) continue;
     const directory = join(root, entry.name, 'recording');
+    let directoryInfo;
     try {
-      const directoryInfo = await lstat(directory);
-      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) continue;
+      directoryInfo = await lstat(directory);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      console.error(`[recording] Could not inspect ${entry.name}: ${error.message}`);
+      continue;
+    }
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) continue;
 
+    try {
       const destination = join(directory, 'recording.webm');
       const partial = join(directory, 'recording.part.webm');
       const incompleteEncode = join(directory, 'recording.part.webm.final.webm');
@@ -25,6 +32,14 @@ export async function recoverInterruptedRecordings(root) {
       const statusPath = join(directory, 'recording.json');
       const status = await readRecordingStatus(statusPath);
       const completedInfo = await regularFile(destination);
+      if (completedInfo && status.state === 'complete') {
+        await Promise.all([
+          rm(partial, { force: true }),
+          rm(incompleteEncode, { force: true }),
+          rm(temporary, { force: true }),
+        ]);
+        continue;
+      }
       if (!completedInfo) {
         const partialInfo = await regularFile(partial);
         if (!partialInfo || partialInfo.size === 0) continue;
@@ -84,7 +99,7 @@ async function readRecordingStatus(path) {
 async function regularFile(path) {
   try {
     const info = await lstat(path);
-    return info.isFile() && !info.isSymbolicLink() ? info : null;
+    return info.isFile() && !info.isSymbolicLink() && info.size > 0 ? info : null;
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
