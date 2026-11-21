@@ -44,6 +44,7 @@ type Entity = Parameters<Bot["attack"]>[0];
 export class FightWeapons {
   readonly itemUse: CombatItemUse;
   weaponReadyAt = 0;
+  shieldRetryAt = 0;
   volleyTicksRemaining: number;
   constructor(
     readonly scene: FightScene,
@@ -190,12 +191,14 @@ export class FightWeapons {
   };
   readonly equip = async (loadout: CombatLoadout) => {
     const previous = this.scene.bot.heldItem?.name ?? null;
-    await equipCombatLoadout(this.scene.bot, loadout);
+    const shieldChanged = await equipCombatLoadout(this.scene.bot, loadout,
+      { tolerateShieldFailure: true, signal: this.scene.signal });
     // A navigation dig can replace the sword with a pickaxe. Switching back
     // resets vanilla attack strength even if the previous swing was long ago.
-    if (previous !== (this.scene.bot.heldItem?.name ?? null)) {
+    if (shieldChanged || previous !== (this.scene.bot.heldItem?.name ?? null)) {
       this.itemUse.invalidateShield();
-      if (loadout.kind === "melee") this.weaponReadyAt = this.scene.elapsedTicks + loadout.cooldownTicks;
+      if (loadout.kind === "melee" && previous !== (this.scene.bot.heldItem?.name ?? null))
+        this.weaponReadyAt = this.scene.elapsedTicks + loadout.cooldownTicks;
     }
   };
   readonly readyWeapon = () =>
@@ -221,7 +224,7 @@ export class FightWeapons {
     this.weaponReadyAt = this.scene.elapsedTicks + loadout.cooldownTicks;
     this.scene.stylesUsed.add(loadout.shield ? "shielded_melee" : "melee");
     this.scene.weaponsUsed.add(loadout.weapon?.name ?? "hand");
-    if (loadout.shield) this.itemUse.activateShield();
+    if (loadout.shield && holdsShield(this.scene.bot)) this.itemUse.activateShield();
     return true;
   };
   readonly bowWindow = (remainingDrawTicks: number) => assessBowWindow(
@@ -333,7 +336,8 @@ export class FightWeapons {
   readonly #available = () =>
     // Endermen evade arrows by teleporting; a carried bow cannot answer this target.
     permittedCombatItems(combatItemsForTarget(this.scene.bot, this.scene.target), this.scene.policy.combat)
-      .filter((item) => this.scene.target.name !== "enderman" || item.name !== "bow");
+      .filter((item) => (this.scene.target.name !== "enderman" || item.name !== "bow") &&
+        (item.name !== "shield" || holdsShield(this.scene.bot) || this.scene.elapsedTicks >= this.shieldRetryAt));
   /**
    * Another walking attacker would swing while a bow is drawn.
    *
@@ -395,14 +399,27 @@ export class FightWeapons {
     this.scene.signal.throwIfAborted();
     await this.raiseGuard();
   };
+  readonly guardNeedsReplacement = (): boolean =>
+    this.itemUse.shieldRaised && !holdsShield(this.scene.bot) &&
+    this.scene.policy.combat.shield && this.currentLoadout().shield !== null;
   readonly raiseGuard = async () => {
     if (!this.scene.policy.combat.shield) return;
     const shield = this.currentLoadout().shield;
     if (!shield || (this.itemUse.shieldRaised && holdsShield(this.scene.bot))) return;
     return this.scene.execution.run("guard", async () => {
-      if (await ensureOffHandShield(this.scene.bot, shield)) this.itemUse.invalidateShield();
+      for (let attempts = 0; !holdsShield(this.scene.bot) && attempts < 3; attempts++) {
+        try {
+          if (await ensureOffHandShield(this.scene.bot, shield)) this.itemUse.invalidateShield();
+        } catch {
+          this.scene.signal.throwIfAborted();
+          if (attempts < 2) await waitForPhysicsTicks(this.scene.bot, 1, this.scene.signal);
+        }
+      }
       this.scene.signal.throwIfAborted();
-      await this.itemUse.raiseShield();
+      // An inaccessible spare cannot keep selecting the guard tactic forever.
+      // Fight without it briefly, then try again as inventory state changes.
+      if (!holdsShield(this.scene.bot)) this.shieldRetryAt = this.scene.elapsedTicks + 40;
+      if (holdsShield(this.scene.bot)) await this.itemUse.raiseShield();
     });
   };
   readonly canAttackFrom = (feet: Vec3) => {

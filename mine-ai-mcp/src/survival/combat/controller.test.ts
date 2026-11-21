@@ -358,6 +358,37 @@ test("a guarded approach that only walked swings without paying shield readiness
   assert.equal(result.attacks, 1);
 });
 
+test("a guarded approach replaces a broken shield before continuing the route", async () => {
+  const fixture = combatFixture(["iron_sword", "shield", "shield"], { targetDistance: 8 });
+  armWithBow(fixture.target).drawing(true);
+  const shields = fixture.bot.inventory.items().filter(item => item.name === "shield");
+  let stoppedForReplacement = false;
+  let continuedProtected = false;
+  let routes = 0;
+  const navigation: NavigationRuntime = {
+    ...navigationFixture(),
+    navigate: async options => {
+      if (++routes === 1) {
+        fixture.bot.inventory.items().splice(fixture.bot.inventory.items().indexOf(shields[0]!), 1);
+        fixture.bot.inventory.slots[45] = null;
+        fixture.bot.usingHeldItem = false;
+        fixture.bot.emit("physicsTick");
+        stoppedForReplacement = options.stopSignal?.aborted ?? false;
+        if (stoppedForReplacement) return { status: "stopped", reason: "shield broke", elapsedMs: 1 };
+      } else {
+        continuedProtected = fixture.bot.inventory.slots[45] === shields[1] && fixture.bot.usingHeldItem;
+      }
+      fixture.target.position.x = 2;
+      return { status: "completed", elapsedMs: 1 };
+    },
+  };
+  fixture.script.onAttack = () => fixture.bot.emit("entityDead", fixture.target);
+  const result = await createCombatController(fixture.bot, navigation).engage(7, new AbortController().signal, "pursue");
+  assert.equal(result.kind, "died");
+  assert.equal(stoppedForReplacement, true, "the current route must yield its hands");
+  assert.equal(continuedProtected, true, "the same fight continues behind the replacement shield");
+});
+
 test("a pack member in reach is answered before chasing the requested target, without settling its verdict", async () => {
   const fixture = combatFixture(["iron_sword", "shield"], { targetDistance: 7 });
   const { bot, target } = fixture;

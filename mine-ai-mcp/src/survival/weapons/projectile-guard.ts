@@ -5,7 +5,7 @@ import { waitForPhysicsTicks } from "../../utils/physics-ticks.js";
 import { incomingShieldProjectiles } from "../perception/combat/shield-projectiles.js";
 import type { CombatPolicy } from "../policy/combat/contract.js";
 import { guardHealthRefusal } from "../policy/combat/health.js";
-import { holdsShield } from "./equipment.js";
+import { ensureOffHandShield, holdsShield } from "./equipment.js";
 import { CombatItemUse } from "./item-use.js";
 import { projectileShieldFacing } from "./shield-facing.js";
 
@@ -37,6 +37,7 @@ export async function guardRetreatProjectiles(
   escapeRequired: () => boolean = () => false,
 ): Promise<RetreatGuardResult> {
   const footing = new SupportedPositionHold(bot, navigation.world);
+  let replacementFailures = 0;
   const tick = () => footing.tick();
   const face = async () => {
     const facing = projectileShieldFacing(bot, RETREAT_PROJECTILE_ALLOWANCE);
@@ -47,6 +48,22 @@ export async function guardRetreatProjectiles(
       if (signal.aborted || escapeRequired()) return;
       await face();
       await waitForPhysicsTicks(bot, 1, signal);
+      if (!holdsShield(bot) && policy.shield && !signal.aborted && !escapeRequired() &&
+        Date.now() < deadline && !guardHealthRefusal(bot.health, policy)) {
+        const spare = bot.inventory.items().find(item => item.name === "shield");
+        if (spare && replacementFailures < 3) {
+          itemUse.invalidateShield();
+          try { await ensureOffHandShield(bot, spare); }
+          catch {
+            signal.throwIfAborted();
+            replacementFailures++;
+            continue;
+          }
+          signal.throwIfAborted();
+          if (!escapeRequired() && policy.shield && Date.now() < deadline &&
+            !guardHealthRefusal(bot.health, policy) && holdsShield(bot)) itemUse.activateShield();
+        }
+      }
     }
   });
   bot.on("physicsTick", tick);
@@ -57,6 +74,8 @@ export async function guardRetreatProjectiles(
       // Unlike an accelerating escape, this guard is stationary. Give the
       // existing reflex policy its body back when holding can no longer work.
       const reason = retreatGuardLimit(bot, policy);
+      if (reason && !holdsShield(bot) && !guardHealthRefusal(bot.health, policy) && policy.shield &&
+        replacementFailures < 3 && bot.inventory.items().some(item => item.name === "shield")) return null;
       if (reason) return { kind: "stopped", reason };
       return incomingShieldProjectiles(bot, RETREAT_PROJECTILE_ALLOWANCE).length > 0 ? null : { kind: "finished" };
     });

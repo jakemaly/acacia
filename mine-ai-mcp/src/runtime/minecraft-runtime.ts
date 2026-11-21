@@ -48,6 +48,7 @@ import { attachHungerReflex } from "../survival/reflexes/hunger.js";
 import { FootingRecovery } from "../survival/responses/footing.js";
 import { attachSessionFrontier, type SessionFrontier, type SessionFrontierStatus } from "../bot-data/frontier.js";
 import { observeEquipmentEvents } from "./equipment-events.js";
+import { attachShieldReplacement } from "./shield-replacement.js";
 import { observeCombatResourceEvents } from "./combat-resource-events.js";
 import { observeReflexActivity } from "./reflex-activity.js";
 import { observeBotStatus } from "./bot-status.js";
@@ -473,6 +474,7 @@ export async function createMinecraftRuntime(
     ),
   );
   resources.use(attachHungerReflex(bot, reflexes, combat, combat.policy));
+  resources.use(attachShieldReplacement(bot, runner, () => combat.policy.combat.shield));
 
   return new AttachedMinecraftRuntime(
     bot,

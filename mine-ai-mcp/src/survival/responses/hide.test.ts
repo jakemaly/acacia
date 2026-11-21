@@ -357,6 +357,42 @@ test("shelter contact uses a ready shield and a non-sweeping tool beside a neutr
   assert.equal(raised, false, "the construction owner releases its shield on settlement");
 });
 
+for (const transientFailure of [false, true]) test(`shelter defence replaces a broken shield (transient failure: ${transientFailure})`, async () => {
+  const bot = botIn({ health: 20, blockAt: position => position.y < 64 ? stone() : air(),
+    items: ["iron_sword", "shield", "shield", "cobblestone"].map(name => ({ name, count: name === "cobblestone" ? 32 : 1 })) });
+  const shields = bot.inventory.items().filter(item => item.name === "shield");
+  bot.entities[2] = closeMob("wither_skeleton");
+  let raised = false;
+  let broken = false;
+  let protectedAtAttack = false;
+  let failures = 0;
+  bot.equip = async (item, destination) => {
+    if (typeof item === "number") throw new Error("Expected an item");
+    if (transientFailure && item === shields[1] && failures++ === 0) throw new Error("transient equip failure");
+    if (item.name === "cobblestone") throw new Error("construction boundary");
+    if (destination === "hand") Reflect.set(bot, "heldItem", item);
+    else bot.inventory.slots[45] = item;
+  };
+  bot.activateItem = () => { raised = true; Reflect.set(bot, "usingHeldItem", true); };
+  bot.deactivateItem = () => { raised = false; Reflect.set(bot, "usingHeldItem", false); };
+  bot.on("physicsTick", () => {
+    if (!broken && raised) {
+      broken = true;
+      bot.inventory.items().splice(bot.inventory.items().indexOf(shields[0]!), 1);
+      bot.inventory.slots[45] = null;
+      raised = false;
+      Reflect.set(bot, "usingHeldItem", false);
+    }
+  });
+  bot.attack = () => {
+    protectedAtAttack = bot.inventory.slots[45] === shields[1] && raised;
+    delete bot.entities[2];
+  };
+  const result = await hide(bot);
+  assert.equal(result.swings, 1);
+  assert.equal(protectedAtAttack, true, "the replacement is equipped and raised while defence continues");
+});
+
 test("a stopped physics stream does not prevent hide cancellation", async () => {
   const bot = botIn({ health: 20, blockAt: () => air() });
   bot.entity.onGround = false;

@@ -105,7 +105,8 @@ export async function evade(
   // Select the hand before navigation starts owning digs and placements.
   const target = request.threats.map((threat) => bot.entities[threat.id]).find((entity) => entity?.isValid);
   const carried = target ? combatItemsForTarget(bot, target) : readCombatItems(bot);
-  await equipCombatLoadout(bot, selectMeleeLoadout(permittedCombatItems(carried, context.policy)));
+  await equipCombatLoadout(bot, selectMeleeLoadout(permittedCombatItems(carried, context.policy)),
+    { tolerateShieldFailure: true, signal });
   signal.throwIfAborted();
   using defence = defendWhileRetreating(bot, context, signal);
   const makeGoal = () => safeFromEntitiesGoal([...threats.values()], request.safeRange + EVADE_ARRIVAL_MARGIN);

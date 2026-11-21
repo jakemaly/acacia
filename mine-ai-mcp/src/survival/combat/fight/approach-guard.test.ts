@@ -27,7 +27,8 @@ function arenaScene() {
     position: new Vec3(-2.1089, -60, 7.7), velocity: new Vec3(0, 0, 0),
     heldItem: { name: "bow" }, metadata: { 8: 1 }, headYaw: 6.0132, pitch: 0,
   } as unknown as Entity;
-  const bot = botFixture({ position: new Vec3(-1.1043, -60, 4.4628), groundY: -61, entities: { 5: skeleton } });
+  const bot = botFixture({ position: new Vec3(-1.1043, -60, 4.4628), groundY: -61, entities: { 5: skeleton },
+    slots: { 45: { name: "shield" } } });
   bot.entity.yaw = GUARD_YAW;
   bot.entity.velocity.set(-0.0291, -0.0784, 0.0027);
   bot.activateItem = () => { bot.usingHeldItem = true; };

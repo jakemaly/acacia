@@ -16,8 +16,9 @@ import { PROTECTION_SIDES, protectionShell } from "../positioning/combat/planner
 import { CombatItemUse } from "../weapons/item-use.js";
 import { canMeleeTarget, combatItemsForTarget, hasSweepBystander } from "../weapons/melee.js";
 import { shieldFacing } from "../weapons/shield-facing.js";
+import { SHIELD_READY_TICKS } from "../perception/combat/observations.js";
 import { recoverUnderCover, type CoveredRecovery } from "./recover.js";
-import { equipCombatLoadout, selectMeleeLoadout } from "../weapons/equipment.js";
+import { ensureOffHandShield, equipCombatLoadout, holdsShield, selectMeleeLoadout } from "../weapons/equipment.js";
 
 function shelterFeet(bot: Bot): Vec3 {
   const cell = navigationFeet(bot.entity.position, bot.entity.onGround);
@@ -206,11 +207,30 @@ export async function hideInPlace(bot: Bot, options: HideOptions): Promise<HideR
   const policy = threatContext.policy;
   const waitForTicks = (ticks: number) => waitForPhysicsTicks(bot, ticks, signal);
   const holdGuard = async (ticks: number) => {
+    const guardWanted = itemUse.shieldRaised;
+    let replacementFailures = 0;
     for (let tick = 0; tick < ticks; tick++) {
       signal.throwIfAborted();
       const intruder = shelterIntruder(bot, threatContext);
       if (intruder) await bot.lookAt(shieldFacing(bot, intruder, threatContext.resolvedIds), true);
       await waitForTicks(1);
+      if (guardWanted && !holdsShield(bot)) {
+        itemUse.invalidateShield();
+        const spare = policy.shield && bot.inventory.items().find(item => item.name === "shield");
+        if (spare && replacementFailures < 3) {
+          try { await ensureOffHandShield(bot, spare); }
+          catch {
+            signal.throwIfAborted();
+            if (++replacementFailures < 3) tick--;
+            continue;
+          }
+          signal.throwIfAborted();
+          if (policy.shield && holdsShield(bot)) {
+            itemUse.activateShield();
+            await holdGuard(SHIELD_READY_TICKS);
+          }
+        }
+      }
     }
   };
   const itemUse = new CombatItemUse(bot, holdGuard);
@@ -298,10 +318,10 @@ export async function hideInPlace(bot: Bot, options: HideOptions): Promise<HideR
     if (!policy.melee) throw new Error("[COMBAT_CONSTRAINED] Shelter contact defence requires prohibited melee.");
     const loadout = selectMeleeLoadout(permittedCombatItems(combatItemsForTarget(bot, intruder), policy));
     const changedWeapon = bot.heldItem?.name !== loadout.weapon?.name;
-    await equipCombatLoadout(bot, loadout);
+    const shieldChanged = await equipCombatLoadout(bot, loadout, { tolerateShieldFailure: true, signal });
     signal.throwIfAborted();
-    if (changedWeapon || !bot.usingHeldItem) itemUse.invalidateShield();
-    if (loadout.shield) await itemUse.raiseShield();
+    if (shieldChanged || changedWeapon || !bot.usingHeldItem) itemUse.invalidateShield();
+    if (loadout.shield && holdsShield(bot)) await itemUse.raiseShield();
     if (changedWeapon) await holdGuard(loadout.cooldownTicks);
     await bot.lookAt(intruder.position.offset(0, intruder.height / 2, 0), true);
     signal.throwIfAborted();
@@ -314,7 +334,7 @@ export async function hideInPlace(bot: Bot, options: HideOptions): Promise<HideR
     if (bot.heldItem?.name.endsWith("_sword") && hasSweepBystander(bot, intruder)) return;
     bot.attack(intruder);
     swings += 1;
-    if (loadout.shield) itemUse.activateShield();
+    if (loadout.shield && holdsShield(bot)) itemUse.activateShield();
     await holdGuard(loadout.cooldownTicks);
   };
 

@@ -116,11 +116,20 @@ export async function ensureOffHandShield(bot: Bot, shield: Item): Promise<boole
 }
 
 /** Equip the shield first, then the selected weapon; null deliberately empties the hand. */
-export async function equipCombatLoadout(bot: Bot, loadout: CombatLoadout): Promise<void> {
-  if (loadout.shield) await ensureOffHandShield(bot, loadout.shield);
+export async function equipCombatLoadout(bot: Bot, loadout: CombatLoadout,
+  options?: { readonly tolerateShieldFailure: true; readonly signal: AbortSignal }): Promise<boolean> {
+  let shieldChanged = false;
+  if (loadout.shield) {
+    try { shieldChanged = await ensureOffHandShield(bot, loadout.shield); }
+    catch (cause) {
+      options?.signal.throwIfAborted();
+      if (!options?.tolerateShieldFailure) throw cause;
+    }
+  }
   if (loadout.weapon) {
     if (bot.heldItem?.name !== loadout.weapon.name) await bot.equip(loadout.weapon, "hand");
   } else if (bot.heldItem) {
     await bot.unequip("hand");
   }
+  return shieldChanged;
 }

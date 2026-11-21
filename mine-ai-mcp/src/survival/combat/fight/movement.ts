@@ -147,7 +147,8 @@ export class FightMovement {
             void this.scene.bot.lookAt(defence.facing, true).catch((error: unknown) => {
               this.scene.responseRequired.abort(error);
             });
-        } else if (stopWhen?.when()) stop.abort(stopWhen.reason);
+        } else if (this.weapons.guardNeedsReplacement()) stop.abort("broken shield needs replacement");
+        else if (stopWhen?.when()) stop.abort(stopWhen.reason);
         else if (
           meleeDistance(this.scene.bot, this.scene.target) <= MELEE_RANGE &&
           hasExposedBody(this.scene.bot, this.scene.target) &&
@@ -227,6 +228,7 @@ export class FightMovement {
       const watch = () => {
         if (this.scene.settled()) stop.abort("engagement ended");
         else if (this.scene.footingRecovery.needed) stop.abort("external impulse requires footing recovery");
+        else if (this.weapons.guardNeedsReplacement()) stop.abort("broken shield needs replacement");
         else if (this.weapons.contact()) stop.abort("another hostile entered melee reach");
         else if (provoking && this.scene.roofTargetHostile()) stop.abort("the selected enderman became hostile");
         else if (

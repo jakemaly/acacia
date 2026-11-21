@@ -6,6 +6,7 @@ export const REFLEX_PRIORITY = [
   "dragon_reflex",
   "hostile_reflex",
   "hunger_reflex",
+  "shield_replacement",
 ] as const;
 
 export function outranksReflex(requested: string, current: string): boolean {

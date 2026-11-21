@@ -197,6 +197,58 @@ test("keeps the shield raised while attacking and waits the cooldown in place", 
   assert.equal(fixture.timeline.slice(0, secondAttack).includes("item-down"), false);
 });
 
+for (const transientFailure of [false, true]) test(`a shield broken in combat is replaced and raised (transient failure: ${transientFailure})`, async () => {
+  const fixture = combatFixture(["iron_sword", "shield", "shield"]);
+  const shields = fixture.bot.inventory.items().filter(item => item.name === "shield");
+  let protectedAgain = false;
+  let failures = 0;
+  const equip = fixture.bot.equip;
+  fixture.bot.equip = async (item, destination) => {
+    if (transientFailure && item === shields[1] && failures++ === 0) throw new Error("transient equip failure");
+    return equip(item, destination);
+  };
+  fixture.script.onAttack = () => {
+    if (fixture.directAttacks.count === 1) {
+      fixture.bot.inventory.items().splice(fixture.bot.inventory.items().indexOf(shields[0]!), 1);
+      fixture.bot.inventory.slots[45] = null;
+      fixture.bot.usingHeldItem = false;
+    } else {
+      protectedAgain = fixture.bot.inventory.slots[45] === shields[1] && fixture.bot.usingHeldItem;
+      fixture.bot.emit("entityDead", fixture.target);
+    }
+  };
+  const outcome = await createCombatController(fixture.bot, navigationFixture()).engage(
+    7, new AbortController().signal, "pursue",
+  );
+  assert.equal(outcome.kind, "died");
+  assert.equal(protectedAgain, true, "combat must equip the spare and resume guarding");
+});
+
+test("a failed spare-shield equip does not end the active fight", async () => {
+  const fixture = combatFixture(["iron_sword", "shield", "shield"]);
+  fixture.target.kind = "Hostile mobs";
+  const cancellation = new AbortController();
+  fixture.script.onWait = () => { if (fixture.clock.tick > 250) cancellation.abort("combat stalled"); };
+  const shields = fixture.bot.inventory.items().filter(item => item.name === "shield");
+  const equip = fixture.bot.equip;
+  fixture.bot.equip = async (item, destination) => {
+    if (item === shields[1]) throw new Error("shield unavailable");
+    return equip(item, destination);
+  };
+  fixture.script.onAttack = () => {
+    if (fixture.directAttacks.count === 1) {
+      fixture.bot.inventory.items().splice(fixture.bot.inventory.items().indexOf(shields[0]!), 1);
+      fixture.bot.inventory.slots[45] = null;
+      fixture.bot.usingHeldItem = false;
+    } else fixture.bot.emit("entityDead", fixture.target);
+  };
+  const outcome = await createCombatController(fixture.bot, navigationFixture()).engage(
+    7, cancellation.signal, "pursue",
+  );
+  assert.equal(outcome.kind, "died");
+  assert.equal(fixture.directAttacks.count, 2);
+});
+
 test("shielded melee strikes a drawing skeleton before it backs out of reach", async () => {
   const fixture = combatFixture(["iron_sword", "shield"]);
   const skeleton = armWithBow(fixture.target);

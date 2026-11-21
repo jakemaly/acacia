@@ -48,6 +48,41 @@ test("a settled retreat guards an incoming blaze projectile and releases the shi
   assert.equal(fixture.bot.usingHeldItem, false, "do not carry shield slowdown into the next escape route");
 });
 
+for (const transientFailure of [false, true]) test(`a retreat guard replaces a broken shield and raises the spare (transient failure: ${transientFailure})`, async () => {
+  const fixture = combatFixture(["iron_sword", "shield", "shield"]);
+  Object.assign(fixture.bot.entity, { position: new Vec3(0.5, 64, 0.5), width: 0.6, height: 1.8,
+    onGround: true, velocity: new Vec3(0, 0, 0) });
+  const shields = fixture.bot.inventory.items().filter(item => item.name === "shield");
+  await fixture.bot.equip(shields[0]!, "off-hand");
+  const equip = fixture.bot.equip;
+  let failures = 0;
+  fixture.bot.equip = async (item, destination) => {
+    if (transientFailure && destination === "off-hand" && failures++ === 0) throw new Error("transient equip failure");
+    return equip(item, destination);
+  };
+  const projectile = { ...fixture.target, id: 8, name: "small_fireball", width: 0.3125,
+    position: new Vec3(4, 64.9, 0.5), velocity: new Vec3(-0.5, 0, 0) } as Entity;
+  fixture.bot.entities[8] = projectile;
+  let guardedAgain = false;
+  fixture.script.onWait = () => {
+    if (fixture.clock.tick === 8) {
+      fixture.bot.inventory.items().splice(fixture.bot.inventory.items().indexOf(shields[0]!), 1);
+      fixture.bot.inventory.slots[45] = null;
+      fixture.bot.usingHeldItem = false;
+    }
+    if (fixture.clock.tick > 8 && fixture.bot.inventory.slots[45] === shields[1] && fixture.bot.usingHeldItem) {
+      guardedAgain = true;
+      projectile.isValid = false;
+    }
+    if (fixture.clock.tick === 80) projectile.isValid = false;
+  };
+  const result = await guardRetreatProjectiles(fixture.bot, navigationFixture(), new AbortController().signal,
+    Date.now() + 15_000, DEFAULT_COMBAT_POLICY);
+  assert.equal(result.kind, "finished");
+  assert.equal(guardedAgain, true, "the spare must be equipped and actively raised before the guard ends");
+  assert.equal(fixture.bot.usingHeldItem, false, "cleanup still releases the guard");
+});
+
 for (const loss of ["health", "shield", "blast clearance"] as const) {
   test(`a stationary retreat guard yields when it loses ${loss}`, async () => {
     const fixture = combatFixture(["iron_sword", "shield"]);
@@ -68,7 +103,10 @@ for (const loss of ["health", "shield", "blast clearance"] as const) {
     fixture.script.onWait = () => {
       if (fixture.clock.tick === 8) {
         if (loss === "health") fixture.bot.health = 7;
-        else if (loss === "shield") fixture.bot.inventory.slots[45] = null;
+        else if (loss === "shield") {
+          fixture.bot.inventory.items().splice(fixture.bot.inventory.items().indexOf(stack(fixture.bot, "shield")), 1);
+          fixture.bot.inventory.slots[45] = null;
+        }
       }
       if (fixture.clock.tick === 100) projectile.isValid = false;
     };
