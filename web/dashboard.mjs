@@ -11,7 +11,7 @@ const modelLabel = value => {
 const toolLabel = value => (value ?? 'tool').replace(/^mcp__minecraft__/, '').replaceAll('_', ' ');
 const labStopLabel = reason => ({ verified_outcome: 'verified success', criteria_failed: 'checks failed',
   death: 'death', time_limit: 'time limit', operator_stop: 'operator stop', run_error: 'setup or run error',
-  incomplete: 'no verified outcome' })[reason]
+  incomplete: 'no verified outcome', unknown: 'not recorded' })[reason]
   ?? (reason ? title(reason.replaceAll('_', ' ')) : 'not recorded');
 const timeline = $('timeline');
 let run = {};
@@ -21,6 +21,7 @@ let messages = new Map();
 let signature = '';
 let controlPending = false;
 let revision = 0;
+let labCatalog = null;
 
 const reviewCategory = {
   decision: 'Gameplay decision',
@@ -365,7 +366,10 @@ async function refresh() {
     }
     run = status;
     renderStatus();
-    if (!run.id || run.state === 'starting') return;
+    if (!run.id || run.state === 'starting') {
+      showError();
+      return;
+    }
     const page = await loadConversation(run.id);
     if (revision !== requestRevision) return;
     const first = page.messages[0]?.offset;
@@ -376,6 +380,7 @@ async function refresh() {
     for (const message of page.messages) messages.set(message.offset, message);
     renderStatus();
     renderConversation();
+    showError();
   } catch (error) {
     showError(error.message);
   } finally {
@@ -441,6 +446,7 @@ async function showRuns() {
 }
 
 function populateLabCatalog(catalog) {
+  labCatalog = catalog;
   const fixture = $('lab-fixture');
   fixture.replaceChildren(...catalog.fixtures.map(item => new Option(item.name, item.id)));
   const checkpoint = $('lab-checkpoint');
@@ -483,6 +489,7 @@ async function startLab(input) {
     await refresh();
   } catch (error) {
     $('lab-launch-status').textContent = error.message;
+    showError(error.message);
     $('run-fixture').disabled = false;
     $('run-checkpoint').disabled = false;
   }
@@ -506,10 +513,24 @@ function checkpointChecks() {
 }
 
 function repeatLab(saved) {
-  if (saved.lab.type === 'fixture') return startLab({ fixtureId: saved.lab.fixtureId,
-    build: saved.lab.build, timeLimitMs: saved.lab.timeLimitMs });
+  if (saved.lab.type === 'fixture') return repeatFixture(saved);
   return startLab({ checkpointId: saved.lab.checkpointId, build: saved.lab.build,
     timeLimitMs: saved.lab.timeLimitMs, instruction: saved.lab.instruction, checks: saved.lab.checks });
+}
+
+async function repeatFixture(saved) {
+  try {
+    const catalog = labCatalog ?? await api('/api/lab');
+    const fixture = catalog.fixtures.find(item => item.id === saved.lab.fixtureId);
+    if (!fixture) throw new Error('This fixture is no longer available. Refresh the run library.');
+    const build = fixture.requiredBuild ?? saved.lab.build;
+    if (build === 'candidate' && !catalog.candidateAvailable) {
+      throw new Error(`${fixture.name} requires the Candidate build, which is unavailable.`);
+    }
+    return startLab({ fixtureId: fixture.id, build, timeLimitMs: fixture.timeLimitMs });
+  } catch (error) {
+    showError(error.message);
+  }
 }
 
 async function showRun(saved) {

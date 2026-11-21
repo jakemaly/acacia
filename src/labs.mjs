@@ -59,8 +59,12 @@ export function validateLabChecks(checks) {
   for (const check of checks) {
     if (!check || typeof check !== 'object') throw new Error('Each success check must be an object.');
     if (['healthAtLeast', 'foodAtLeast'].includes(check.kind) && Number.isFinite(check.value) && check.value >= 0) continue;
+    const validCenter = check.center === undefined || (check.center &&
+      /^minecraft:[a-z0-9_]+$/.test(check.center.dimension ?? '') &&
+      ['x', 'y', 'z'].every(axis => Number.isFinite(check.center[axis]) && Math.abs(check.center[axis]) <= 30_000_000) &&
+      (check.center.radius === undefined || (Number.isFinite(check.center.radius) && check.center.radius > 0 && check.center.radius <= 8)));
     if (['inventoryAtLeast', 'inventoryBelow', 'inventoryOrNearbyAtLeast'].includes(check.kind) &&
-        /^[a-z0-9_]+$/.test(check.item ?? '') && Number.isInteger(check.count) && check.count >= 0) continue;
+        /^[a-z0-9_]+$/.test(check.item ?? '') && Number.isInteger(check.count) && check.count >= 0 && validCenter) continue;
     if (check.kind === 'blockAt' && check.pos && ['x', 'y', 'z'].every(axis => Number.isSafeInteger(check.pos[axis])) &&
         /^[a-z0-9_]+$/.test(check.name ?? '')) continue;
     throw new Error('A success check has an unsupported type or invalid value.');
@@ -85,8 +89,9 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
     }
     if (check.kind === 'inventoryOrNearbyAtLeast') {
       const carried = itemCount(evidence.status, check.item) ?? 0;
+      const radius = check.center?.radius ?? 4;
       const observedNearby = evidence.status?.nearby?.droppedItems
-        ?.filter(item => item.name === check.item && Number.isFinite(item.distance) && item.distance <= 4)
+        ?.filter(item => item.name === check.item && Number.isFinite(item.distance) && item.distance <= radius)
         .reduce((sum, item) => sum + item.count, 0) ?? 0;
       const nearby = Math.max(evidence.groundItems?.[check.item] ?? 0, observedNearby);
       actual = { carried, nearby, total: carried + nearby };

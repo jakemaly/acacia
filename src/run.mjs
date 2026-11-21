@@ -43,14 +43,20 @@ export function createLabEvidenceCollector({ id, serverOutput, write, waitFor, s
   return async checks => {
     const items = [...new Set(checks.filter(check => check.kind === 'inventoryOrNearbyAtLeast').map(check => check.item))];
     if (!items.length) return {};
+    const itemChecks = checks.filter(check => check.kind === 'inventoryOrNearbyAtLeast');
     const firstLine = serverOutput.length;
     const marker = `LAB_ITEMS_${id}_${++sample}`;
     write(`/say ${marker}_BEGIN\n/scoreboard objectives add acacialab dummy\n`);
     for (const item of items) {
-      const selector = `@e[type=minecraft:item,nbt={Item:{id:"minecraft:${item}"}},distance=..4]`;
+      const center = itemChecks.find(check => check.item === item)?.center;
+      const radius = center?.radius ?? 4;
+      const selector = `@e[type=minecraft:item,nbt={Item:{id:"minecraft:${item}"}},distance=..${radius}]`;
       write('/scoreboard players set #total acacialab 0\n');
-      write(`/execute at Acacia as ${selector} store result score @s acacialab run data get entity @s Item.Count\n`);
-      write(`/execute at Acacia as ${selector} run scoreboard players operation #total acacialab += @s acacialab\n`);
+      const origin = center
+        ? `/execute in ${center.dimension} positioned ${center.x} ${center.y} ${center.z}`
+        : '/execute at Acacia';
+      write(`${origin} as ${selector} store result score @s acacialab run data get entity @s Item.Count\n`);
+      write(`${origin} as ${selector} run scoreboard players operation #total acacialab += @s acacialab\n`);
       write('/scoreboard players get #total acacialab\n');
     }
     write(`/say ${marker}_END\n`);

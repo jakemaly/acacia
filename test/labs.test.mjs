@@ -10,14 +10,25 @@ test('the fixture library contains the authored Blaze and reflex trials', async 
   const fixtures = await labFixtures();
   assert.deepEqual(fixtures.map(fixture => fixture.id).sort(), ['blaze-spawner-tool', 'hunger-reflex']);
   assert.equal(fixtures.find(fixture => fixture.id === 'blaze-spawner-tool').controller.name, 'farm_blaze_spawner');
-  assert.deepEqual(fixtures.find(fixture => fixture.id === 'blaze-spawner-tool').activateCommands, ['/difficulty normal']);
+  assert.deepEqual(fixtures.find(fixture => fixture.id === 'blaze-spawner-tool').activateCommands, [
+    '/gamerule doMobSpawning false',
+    '/difficulty normal',
+    '/execute in minecraft:the_nether run kill @e[type=minecraft:blaze,x=117,y=75,z=681,distance=..16]',
+    '/execute in minecraft:the_nether run kill @e[type=minecraft:item,x=117,y=75,z=681,distance=..16]',
+  ]);
   const blaze = fixtures.find(fixture => fixture.id === 'blaze-spawner-tool');
-  assert.equal(blaze.version, 5);
+  assert.equal(blaze.version, 12);
   assert.equal(blaze.requiredBuild, 'candidate');
-  assert.match(blaze.controller.arguments.rationale, /twenty blaze rods/);
+  assert.equal(blaze.controller.arguments.time_limit_ms, 840_000);
+  assert.equal(blaze.controller.arguments.count, 20);
+  assert.equal(blaze.timeLimitMs, 900_000);
+  assert.equal(blaze.checks.find(check => check.kind === 'inventoryOrNearbyAtLeast').count, 20);
+  assert.deepEqual(blaze.checks.find(check => check.kind === 'inventoryOrNearbyAtLeast').center,
+    { dimension: 'minecraft:the_nether', x: 117.5, y: 72.5, z: 681.5, radius: 6 });
+  assert.match(blaze.controller.arguments.rationale, /twenty new blaze rods/);
   assert.ok(blaze.prepare.includes('/execute in minecraft:the_nether run setblock 117 72 681 minecraft:nether_brick_slab[type=bottom]'));
   assert.ok(blaze.prepare.includes('/execute in minecraft:the_nether run setblock 117 74 681 minecraft:nether_bricks'));
-  assert.ok(blaze.prepare.includes('/execute in minecraft:the_nether run data merge block 117 75 681 {SpawnRange:2}'));
+  assert.ok(blaze.prepare.includes('/execute in minecraft:the_nether run data merge block 117 75 681 {SpawnRange:2,SpawnCount:4,MaxNearbyEntities:4}'));
   assert.equal(blaze.prepare.filter(command => command.includes('setblock 117 74 681 minecraft:nether_bricks')).length, 1);
   assert.ok(blaze.prepare.indexOf('/give Acacia minecraft:diamond_pickaxe') >
     blaze.prepare.findIndex(command => command.includes('weapon.mainhand with minecraft:diamond_sword')));
@@ -97,6 +108,19 @@ test('independent fixture checks count nearby drops and reject missing block evi
     groundItems: { blaze_rod: 0 },
   }).passed, false);
   assert.equal(evaluateLabChecks([], {}).passed, false);
+});
+
+test('nearby-item checks use the same bounded radius as the fixture evidence collector', () => {
+  const check = { kind: 'inventoryOrNearbyAtLeast', item: 'blaze_rod', count: 20,
+    center: { dimension: 'minecraft:the_nether', x: 117.5, y: 72.5, z: 681.5, radius: 6 } };
+  assert.deepEqual(validateLabChecks([check]), [check]);
+  assert.equal(evaluateLabChecks([check], {
+    status: { inventory: { stacks: [] }, nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 5.9 }] } },
+  }).passed, true);
+  assert.equal(evaluateLabChecks([check], {
+    status: { inventory: { stacks: [] }, nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 6.1 }] } },
+  }).passed, false);
+  assert.throws(() => validateLabChecks([{ ...check, center: { ...check.center, radius: 9 } }]), /unsupported/);
 });
 
 test('live lab evidence requests structured status and block results', async () => {

@@ -35,11 +35,14 @@ for file in Dockerfile inside.mjs viewer.mjs recording.mjs browser-recording.mjs
 done
 printf '%s\n' "$fork_commit" > "$context/deploy/mine-ai-source.commit"
 
-# Use Git's tracked and non-ignored files so local caches and ignored credentials never enter the image.
+# Export source additions without copying local caches, generated runs, or ignored credentials.
 git -C "$fork_dir" ls-files -co --exclude-standard -z \
   | while IFS= read -r -d '' file; do
       case "$file" in
         .env|*/.env|.env.*|*/.env.*) continue ;;
+      esac
+      case "/$file/" in
+        */node_modules/*|*/.bun/*|*/.cache/*|*/.gradle/*|*/.mine-labs/*|*/dist/*|*/coverage/*) continue ;;
       esac
       if [[ -e "$fork_dir/$file" ]]; then printf '%s\0' "$file"; fi
     done \

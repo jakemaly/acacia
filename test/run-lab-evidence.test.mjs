@@ -25,7 +25,8 @@ test('each nearby-item evidence poll waits for its own server marker', async () 
     throw new Error('Evidence marker timed out.');
   };
   const collect = createLabEvidenceCollector({ id: 'abc123', serverOutput, write, waitFor, serverExit: Promise.resolve() });
-  const check = [{ kind: 'inventoryOrNearbyAtLeast', item: 'blaze_rod', count: 20 }];
+  const check = [{ kind: 'inventoryOrNearbyAtLeast', item: 'blaze_rod', count: 20,
+    center: { dimension: 'minecraft:the_nether', x: 117.5, y: 72.5, z: 681.5, radius: 6 } }];
 
   assert.deepEqual(await collect(check), { groundItems: { blaze_rod: 20 } });
   assert.deepEqual(await collect(check), { groundItems: { blaze_rod: 20 } });
@@ -34,4 +35,6 @@ test('each nearby-item evidence poll waits for its own server marker', async () 
     .filter(line => line.startsWith('/say LAB_ITEMS_') && line.endsWith('_END'));
   assert.equal(markers.length, 2);
   assert.notEqual(markers[0], markers[1]);
+  assert.ok(commands.some(command => command.includes(
+    '/execute in minecraft:the_nether positioned 117.5 72.5 681.5 as @e[type=minecraft:item,nbt={Item:{id:"minecraft:blaze_rod"}},distance=..6]')));
 });
