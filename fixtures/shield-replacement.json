@@ -1,0 +1,29 @@
+{
+  "id": "shield-replacement",
+  "name": "Shield replacement",
+  "description": "When a shield breaks during hostile contact, move the carried spare into the off-hand.",
+  "version": 1,
+  "seed": "61003",
+  "worldType": "flat",
+  "difficulty": "normal",
+  "controller": { "type": "idle" },
+  "timeLimitMs": 60000,
+  "prepare": [
+    "/gamerule doMobSpawning false",
+    "/gamerule naturalRegeneration false",
+    "/fill -6 -60 -6 12 -60 6 minecraft:stone",
+    "/item replace entity Acacia weapon.offhand with minecraft:shield[minecraft:damage=335]",
+    "/item replace entity Acacia weapon.mainhand with minecraft:diamond_sword",
+    "/give Acacia minecraft:shield 1",
+    "/tp Acacia 0.5 -59 0.5"
+  ],
+  "activateCommands": [
+    "/item replace entity Acacia weapon.offhand with air",
+    "/summon minecraft:skeleton 6.5 -59 0.5 {NoAI:1b,Invulnerable:1b,PersistenceRequired:1b}"
+  ],
+  "checks": [
+    { "kind": "healthAtLeast", "value": 1 },
+    { "kind": "equippedItem", "item": "shield", "location": "off-hand", "durabilityAtLeast": 300 },
+    { "kind": "inventoryBelow", "item": "shield", "count": 2 }
+  ]
+}

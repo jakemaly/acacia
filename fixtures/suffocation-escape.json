@@ -1,0 +1,24 @@
+{
+  "id": "suffocation-escape",
+  "name": "Underwater suffocation escape",
+  "description": "Dig through the sealed stone roof, surface from a flooded chamber, and regain air with enough health remaining.",
+  "version": 1,
+  "seed": "61002",
+  "worldType": "flat",
+  "difficulty": "peaceful",
+  "controller": { "type": "idle" },
+  "timeLimitMs": 180000,
+  "prepare": [
+    "/gamerule doMobSpawning false",
+    "/gamerule naturalRegeneration false",
+    "/fill -2 -60 -2 6 -56 6 minecraft:stone",
+    "/fill 0 -59 0 4 -57 4 minecraft:water",
+    "/give Acacia minecraft:diamond_pickaxe 1",
+    "/tp Acacia 2.5 -58 2.5"
+  ],
+  "checks": [
+    { "kind": "healthAtLeast", "value": 10 },
+    { "kind": "airAtLeast", "value": 250 },
+    { "kind": "notInWater" }
+  ]
+}

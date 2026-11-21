@@ -281,10 +281,20 @@ async function attempt(scenario, verify, options) {
       const hardcore = mode === 'hardcore';
       const manifest = JSON.parse(await readFile(join(directory, 'run.json'), 'utf8'));
       assert.equal(manifest.hardcore, hardcore);
-      assert.equal(manifest.revision, 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff');
-      assert.equal(manifest.forkRepository, 'https://github.com/jakemaly/mine-ai-mcp');
-      assert.equal(manifest.forkCommit, '12d55d41f2084dca20eb33451d22f839bf8b7101');
       assert.equal(manifest.imageDigest, manifest.image);
+      const containerImage = execFileSync('docker', ['inspect', '--format', '{{.Image}}',
+        `mineai-${run.id}-bot`], { encoding: 'utf8' }).trim();
+      assert.equal(manifest.imageDigest, containerImage, 'the manifest must identify the image actually used');
+      if (process.env.MINECRAFT_EXPECT_MONOREPO_COMMIT) {
+        assert.ok(Object.values(manifest).includes(process.env.MINECRAFT_EXPECT_MONOREPO_COMMIT),
+          'the manifest must record the commit used to build the image');
+      }
+      if (process.env.MINECRAFT_EXPECT_MONOREPO_DIRTY) {
+        const expected = process.env.MINECRAFT_EXPECT_MONOREPO_DIRTY;
+        assert.ok(Object.entries(manifest).some(([key, value]) =>
+          /dirty|working.?tree/i.test(key) && (value === expected || value === (expected === 'dirty'))),
+        'the manifest must record whether the built sources contained local edits');
+      }
       const base = (await readFile(new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url), 'utf8')).trimEnd();
       const prompt = transcript.messages.find(message => message.role === 'user')?.text;
       const decision = (await readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8')).trim();
@@ -334,6 +344,11 @@ test('a premature final reply continues the run and stale results do not extend 
     await assert.rejects(fetch(`http://${host}:25575/health`));
     const final = await terminal();
     assert.equal(final.state, 'incomplete');
+    const events = (await readFile(join(directory, 'activity.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    const catalog = events.find(event => event.type === 'catalogue');
+    assert.ok(catalog, 'the real MCP catalog must be recorded');
+    assert.ok(catalog.tools.some(tool => tool.name === 'hunt_endermen_under_umbrella'),
+      'the running MCP server must expose the current Enderman action');
     const recording = JSON.parse(await readFile(join(directory, 'recording/recording.json'), 'utf8'));
     assert.equal(recording.state, 'complete');
     const video = await readFile(join(directory, 'recording/recording.webm'));

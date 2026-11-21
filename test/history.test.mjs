@@ -36,3 +36,23 @@ test('saved run and conversation retain older messages and keep internal Pi mess
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('saved runs expose monorepo image provenance', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'acacia-history-'));
+  try {
+    const directory = join(root, '123456abcdef');
+    await mkdir(directory);
+    await writeFile(join(directory, 'run.json'), JSON.stringify({
+      imageDigest: 'sha256:image', sourceCommit: 'abc123', sourceWorkingTree: 'dirty', sourceDigest: 'snapshot',
+    }));
+    const [run] = await savedRuns(root);
+    assert.deepEqual({
+      image: run.runtime.imageDigest,
+      commit: run.runtime.sourceCommit,
+      workingTree: run.runtime.sourceWorkingTree,
+      source: run.runtime.sourceDigest,
+    }, { image: 'sha256:image', commit: 'abc123', workingTree: 'dirty', source: 'snapshot' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

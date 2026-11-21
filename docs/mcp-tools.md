@@ -1,19 +1,15 @@
 # Creating MCP tools for Acacia
 
-Acacia's model chooses the objective and invokes Minecraft MCP tools. The tool implementation belongs in the private Mine AI MCP repository; the Acacia repository contains the dashboard, run harness, and a thin adapter. Do not add model-side scripts, workspace paths, or file-writing tools to make gameplay happen.
+Acacia's model chooses the objective and invokes Minecraft MCP tools. Tool implementation lives in `mine-ai-mcp/` beside the dashboard, run harness, and adapter. Do not add model-side scripts, workspace paths, or file-writing tools to make gameplay happen.
 
-## 1. Start in the private MCP repository
+## 1. Start in the MCP directory
 
-The tool source is [`jakemaly/mine-ai-mcp`](https://github.com/jakemaly/mine-ai-mcp), on the `acacia-compat` branch. That branch is based on the pinned Mine AI source described in `deploy/build-private-mcp-image.sh`.
+The MCP server is in this checkout.
 
 ```sh
-git clone git@github.com:jakemaly/mine-ai-mcp.git
 cd mine-ai-mcp
-git fetch origin
-git switch -c branch/<tool-name> origin/acacia-compat
+bun install --frozen-lockfile
 ```
-
-Keep tool work private. Do not push Acacia-specific changes to Mine AI's public upstream repository.
 
 ## 2. Add a domain-level action
 
@@ -28,9 +24,9 @@ Design the action around a useful objective, not a sequence of clicks. Let the e
 
 Return observed evidence in the result: what was requested, what changed, what remains, and why execution stopped. Use `partial` when useful progress happened but the objective is unfinished. Do not report success from an attempted action alone.
 
-For short work, use a one-shot `task` or `information` action. For long-running objectives, use Mine AI's `resumable_task` lifecycle so callers can observe progress, wait for the settled typed result, or cancel the specific action. See the private repository's [`docs/mcp/async-actions.md`](https://github.com/jakemaly/mine-ai-mcp/blob/acacia-compat/docs/mcp/async-actions.md).
+For short work, use a one-shot `task` or `information` action. For long-running objectives, use Mine AI's `resumable_task` lifecycle so callers can observe progress, wait for the settled typed result, or cancel the specific action. See [async actions](../mine-ai-mcp/docs/mcp/async-actions.md).
 
-Register the action in `src/actions/index.ts` and inject only the dependencies it needs through its factory. The catalog is the MCP server's source of truth.
+Register the action in `src/actions/catalog.ts` and inject only the dependencies it needs through its factory. The catalog is the MCP server's source of truth.
 
 ## 3. Check Acacia's adapter only when needed
 
@@ -38,7 +34,7 @@ Acacia reads the MCP catalog at run start. Most new actions pass through automat
 
 The gameplay model receives Minecraft tools, not access to Acacia's host files. Host-owned run manifests, transcripts, logs, and world saves are operational records and are not a tool API.
 
-## 4. Verify and promote
+## 4. Verify and build
 
 From the MCP repository, run:
 
@@ -48,4 +44,4 @@ bun run test
 
 Add behavior tests for the action's real stopping conditions and evidence, not just schema snapshots. For foreground work, cover progress, cancellation, interruption by survival reflexes, resumption, and settled receipts.
 
-After review, merge the action into the private `acacia-compat` branch. Update the pinned `fork_commit` in `deploy/build-private-mcp-image.sh`, build the candidate image, and confirm a fresh run's recorded fork commit and image digest. Check the recorded MCP catalog to verify the new schema is actually exposed. Keep the gameplay prompt and unrelated runtime settings fixed while evaluating a tool change.
+From the repository root, run `npm run build:bot` after changing the server. Confirm a fresh run's recorded source revision and image digest, and check the recorded MCP catalog to verify the new schema is exposed. Keep the gameplay prompt and unrelated runtime settings fixed while evaluating a tool change.

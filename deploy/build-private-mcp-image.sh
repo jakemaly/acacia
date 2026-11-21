@@ -3,8 +3,8 @@ set -euo pipefail
 
 upstream_base='de4fef3260424d973bf81d0eaa15ff1a2f73ecff'
 fork_repository='https://github.com/jakemaly/mine-ai-mcp'
-fork_branch='branch/acacia-tool-autonomy'
-fork_commit='a8ca9f9cfacd33be12448a4a55f97cc210a37b56'
+fork_branch='main'
+fork_commit='396b021b443ea009bea696fa185489d06bb95ce0'
 fork_dir="${MINE_AI_FORK_DIR:-$HOME/.local/src/mine-ai-mcp}"
 source_dir="$(pwd)/deploy/mine-ai-source"
 image_tag='minecraft-mine-ai:acacia-fork-compat'

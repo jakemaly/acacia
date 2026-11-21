@@ -204,10 +204,11 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
             return `Lab tool ${tool.label} reached an independently verified result.`;
           }
           const controllerResult = completed.result;
-          recordToolEnd(labToolResultDetails(controllerResult));
+          const controllerResultDetails = labToolResultDetails(controllerResult);
+          recordToolEnd(controllerResultDetails);
           monitorAbort.abort();
-          const { evidence, outcome } = await assessLab(baseline);
-          await onLabOutcome?.({ ...outcome, evidence, controllerResult: labToolResultDetails(controllerResult) });
+          const { evidence, outcome } = await assessLab(baseline, signal, undefined, controllerResultDetails);
+          await onLabOutcome?.({ ...outcome, evidence, controllerResult: controllerResultDetails });
           return `Lab tool ${tool.label} finished. Verified result: ${outcome.passed ? 'passed' : 'failed'}.`;
         } finally {
           monitorAbort.abort();
@@ -216,6 +217,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
       }
       if (lab.controller.type === 'idle') {
         let previous = baseline;
+        await onLabControllerStart?.();
         while (!signal.aborted) {
           await delay(3000, undefined, { signal, ref: false });
           const { evidence, outcome } = await assessLab(baseline, signal, previous);
@@ -317,13 +319,14 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
       }
     }
 
-    async function observeLab(observationSignal = signal) {
+    async function observeLab(observationSignal = signal, controllerResult) {
       return { ...await readLabEvidence(client, lab.checks, observationSignal),
+        ...(controllerResult && { controllerResult }),
         ...await collectLabEvidence?.(lab.checks) };
     }
 
-    async function assessLab(baseline, observationSignal = signal, previous) {
-      const evidence = await observeLab(observationSignal);
+    async function assessLab(baseline, observationSignal = signal, previous, controllerResult) {
+      const evidence = await observeLab(observationSignal, controllerResult);
       const outcome = evaluateLabChecks(lab.checks, evidence, baseline.status);
       if (!previous || JSON.stringify(evidence) !== JSON.stringify(previous)) record('lab_observation', { evidence, outcome });
       return { evidence, outcome };

@@ -6,9 +6,11 @@ import { test } from 'node:test';
 import { evaluateLabChecks, labCheckpoints, labFixtures, readLabEvidence, resolveLabCheckpoint, validateLabChecks } from '../src/labs.mjs';
 import { dashboard } from '../src/server.mjs';
 
-test('the fixture library contains the authored Blaze and reflex trials', async () => {
+test('the fixture library contains the authored tool and reflex trials', async () => {
   const fixtures = await labFixtures();
-  assert.deepEqual(fixtures.map(fixture => fixture.id).sort(), ['blaze-spawner-tool', 'hunger-reflex']);
+  assert.deepEqual(fixtures.map(fixture => fixture.id).sort(), [
+    'blaze-spawner-tool', 'enderman-umbrella', 'hunger-reflex', 'shield-replacement', 'suffocation-escape', 'water-bucket-landing',
+  ]);
   assert.equal(fixtures.find(fixture => fixture.id === 'blaze-spawner-tool').controller.name, 'farm_blaze_spawner');
   assert.deepEqual(fixtures.find(fixture => fixture.id === 'blaze-spawner-tool').activateCommands, [
     '/gamerule doMobSpawning false',
@@ -33,6 +35,19 @@ test('the fixture library contains the authored Blaze and reflex trials', async 
   assert.ok(blaze.prepare.indexOf('/give Acacia minecraft:diamond_pickaxe') >
     blaze.prepare.findIndex(command => command.includes('weapon.mainhand with minecraft:diamond_sword')));
   assert.equal(fixtures.find(fixture => fixture.id === 'hunger-reflex').controller.type, 'idle');
+  const water = fixtures.find(fixture => fixture.id === 'water-bucket-landing');
+  assert.equal(water.controller.type, 'idle');
+  assert.ok(water.checks.some(check => check.kind === 'positionWithin'));
+  assert.ok(water.checks.some(check => check.kind === 'inventoryAtLeast' && check.item === 'water_bucket'));
+  const breath = fixtures.find(fixture => fixture.id === 'suffocation-escape');
+  assert.ok(breath.checks.some(check => check.kind === 'notInWater'));
+  assert.ok(breath.checks.some(check => check.kind === 'airAtLeast'));
+  const shield = fixtures.find(fixture => fixture.id === 'shield-replacement');
+  assert.equal(shield.checks.find(check => check.kind === 'equippedItem').durabilityAtLeast, 300);
+  const umbrella = fixtures.find(fixture => fixture.id === 'enderman-umbrella');
+  assert.equal(umbrella.controller.name, 'hunt_endermen_under_umbrella');
+  assert.ok(umbrella.checks.some(check => check.kind === 'positionWithin' && check.center.z === -0.5));
+  assert.ok(umbrella.checks.filter(check => check.kind === 'blockAt').length >= 7);
 });
 
 test('Blaze advertises Candidate and rejects Current before starting an unsupported run', async t => {
@@ -108,6 +123,46 @@ test('independent fixture checks count nearby drops and reject missing block evi
     groundItems: { blaze_rod: 0 },
   }).passed, false);
   assert.equal(evaluateLabChecks([], {}).passed, false);
+});
+
+test('fixture checks verify breath escape, replacement equipment, hostile counts, and structured tool results', () => {
+  const checks = [
+    { kind: 'airAtLeast', value: 250 },
+    { kind: 'notInWater' },
+    { kind: 'equippedItem', item: 'shield', location: 'off-hand', durabilityAtLeast: 300 },
+    { kind: 'mobCountAtMost', mob: 'enderman', count: 0 },
+    { kind: 'toolResult', path: 'combat.killsObserved', atLeast: 1 },
+    { kind: 'toolResult', path: 'leftShelter', equals: true },
+  ];
+  assert.deepEqual(validateLabChecks(checks), checks);
+  assert.throws(() => validateLabChecks([{ kind: 'toolResult', path: '__proto__.polluted', equals: true }]), /unsupported/);
+  assert.throws(() => validateLabChecks([{ kind: 'toolResult', path: 'status' }]), /unsupported/);
+  assert.throws(() => validateLabChecks([{ kind: 'equippedItem', item: 'shield', location: 'pocket' }]), /unsupported/);
+
+  const evidence = {
+    status: {
+      vitals: { airSupplyTicks: 280 },
+      position: { inWater: false },
+      inventory: { stacks: [{ name: 'shield', location: 'off-hand', count: 1, durability: { remaining: 336, maximum: 336 } }] },
+      nearby: { mobs: [] },
+    },
+    controllerResult: {
+      result: { response: { data: { output: { result: { combat: { killsObserved: 1 }, leftShelter: true } } } } },
+    },
+  };
+  assert.deepEqual(evaluateLabChecks(checks, evidence).checks.map(check => check.passed), [true, true, true, true, true, true]);
+  assert.equal(evaluateLabChecks(checks, { ...evidence, status: { ...evidence.status,
+    inventory: { stacks: [{ name: 'shield', location: 'off-hand', count: 1, durability: { remaining: 1, maximum: 336 } }] } } }).passed, false);
+  assert.equal(evaluateLabChecks(checks, { ...evidence, status: { ...evidence.status, position: { inWater: true } } }).passed, false);
+  assert.equal(evaluateLabChecks(checks, { ...evidence, controllerResult: null }).passed, false);
+});
+
+test('fixture position checks prove the bot reached a bounded target area', () => {
+  const check = { kind: 'positionWithin', center: { x: 0.5, y: -59, z: 0.5, radius: 2 } };
+  assert.deepEqual(validateLabChecks([check]), [check]);
+  assert.equal(evaluateLabChecks([check], { status: { position: { x: 1, y: -59, z: 1 } } }).passed, true);
+  assert.equal(evaluateLabChecks([check], { status: { position: { x: 4, y: -59, z: 1 } } }).passed, false);
+  assert.throws(() => validateLabChecks([{ ...check, center: { ...check.center, radius: 9 } }]), /unsupported/);
 });
 
 test('nearby-item checks use the same bounded radius as the fixture evidence collector', () => {

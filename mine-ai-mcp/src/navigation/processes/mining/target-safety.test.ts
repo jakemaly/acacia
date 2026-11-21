@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Vec3 } from "vec3";
+import { botFixture } from "../../../test-support/bot.js";
+import { flatWorld } from "../../../test-support/navigation.js";
+import { answerBlocks } from "../../../test-support/world.js";
+import { createMovementPolicy } from "../../movements/policy.js";
+import { evaluateMineTarget, lavaClosuresOf } from "./target-safety.js";
+import { createMineflayerMovementPolicy } from "../../mineflayer/movement-policy.js";
+import { observeMineflayerBlock } from "../../mineflayer/world.js";
+import { blockClass } from "../../../world/block-class.js";
+
+test("lava preparation counts permitted building material, not reserved inventory", () => {
+  const bot = botFixture({ items: [{ type: 1, name: "oak_log", count: 64 }] });
+  const blocks = blockClass(bot);
+  const target = blocks.fromStateId(bot.registry.blocksByName.oak_log!.defaultState, 0);
+  target.position = new Vec3(0, 64, 0);
+  answerBlocks(bot, (position) => position.equals(new Vec3(1, 64, 0)) ? "lava" : "air");
+  const policy = createMovementPolicy();
+  const world = flatWorld();
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 0), {
+    kind: "prohibited",
+    reason: "1 lava face, 0 blocks available for placement",
+  });
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 1), {
+    kind: "mineable",
+    routeMayBreak: false,
+  });
+});
+
+test("missing isolation material rejects a dry water barrier but retains a swimmer's approach", () => {
+  const bot = botFixture();
+  let submergedTarget = false;
+  answerBlocks(bot, (position) =>
+    position.equals(new Vec3(2, 64, 0)) || (submergedTarget && position.equals(new Vec3(1, 65, 0)))
+      ? "water" : position.equals(new Vec3(1, 64, 0)) ? "stone" : "air",
+  );
+  const world = {
+    blockAt: (x: number, y: number, z: number) => observeMineflayerBlock(bot.blockAt(new Vec3(x, y, z))!),
+    revision: 0, subscribe: () => () => {},
+  };
+  const policy = createMineflayerMovementPolicy(bot);
+  const target = bot.blockAt(new Vec3(1, 64, 0))!;
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 0), {
+    kind: "prohibited", reason: "liquid isolation needs a permitted building block or an empty bucket",
+  });
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 1), { kind: "mineable", routeMayBreak: false });
+  Reflect.set(bot.entity, "isInWater", true);
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 0), { kind: "mineable", routeMayBreak: false });
+  Reflect.set(bot.entity, "isInWater", false);
+  submergedTarget = true;
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 0), { kind: "mineable", routeMayBreak: false },
+    "a shore approach to an already submerged target remains available");
+});
+
+test("lava below an open drop column needs a floor under the target", () => {
+  const bot = botFixture({ items: [{ type: 1, name: "cobblestone", count: 1 }] });
+  let lavaDepth = 3;
+  answerBlocks(bot, (position) =>
+    position.equals(new Vec3(0, 64, 0)) ? "stone"
+      : position.equals(new Vec3(0, 64 - lavaDepth, 0)) ? "lava" : "air",
+  );
+  const target = bot.blockAt(new Vec3(0, 64, 0))!;
+  const policy = createMovementPolicy();
+  const world = flatWorld();
+  assert.deepEqual(lavaClosuresOf(bot, target.position), [{ x: 0, y: 63, z: 0 }]);
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 0), {
+    kind: "prohibited",
+    reason: "a floor over lava, 0 blocks available for placement",
+  });
+  assert.deepEqual(evaluateMineTarget(bot, policy, target, world, 1), { kind: "mineable", routeMayBreak: false });
+
+  lavaDepth = 1;
+  assert.deepEqual(lavaClosuresOf(bot, target.position), [{ x: 0, y: 63, z: 0 }],
+    "lava directly below is a face, counted once");
+});
+
+test("a drop column that ends on a solid block or in water needs no floor", () => {
+  const bot = botFixture();
+  let stop = "stone";
+  answerBlocks(bot, (position) =>
+    position.equals(new Vec3(0, 64, 0)) ? "stone"
+      : position.equals(new Vec3(0, 61, 0)) ? stop
+      : position.equals(new Vec3(0, 60, 0)) ? "lava" : "air",
+  );
+  assert.deepEqual(lavaClosuresOf(bot, { x: 0, y: 64, z: 0 }), []);
+  // Items float in water, so a pool between the target and the lava catches the drop.
+  stop = "water";
+  assert.deepEqual(lavaClosuresOf(bot, { x: 0, y: 64, z: 0 }), []);
+});
+
+test("an open cell beside the target over lava is a drop's spill path and needs closing", () => {
+  // survival/fire-reflex, MinerBot, 2026-10-21: obsidian at 500,-59,-1 rests
+  // on stone, and the hole the bot escaped from now holds lava at 500,-60,0,
+  // under the open cell beside the obsidian. A broken block's drop pops out
+  // with a random offset and drift of up to half a block: in two of eight
+  // trials it crossed into that cell, fell into the lava and burned within
+  // 0.7 s, and the collection then explored for another obsidian until the
+  // trial ran out.
+  const bot = botFixture();
+  const lava = new Vec3(500, -60, 0);
+  let lavaThere = true;
+  answerBlocks(bot, (position) =>
+    position.equals(new Vec3(500, -59, -1)) ? "obsidian"
+      : position.equals(lava) ? (lavaThere ? "lava" : "stone")
+      : position.y <= -60 ? "stone" : "air",
+  );
+  const target = bot.blockAt(new Vec3(500, -59, -1))!;
+  assert.deepEqual(lavaClosuresOf(bot, target.position), [{ x: 500, y: -60, z: 0 }]);
+  assert.deepEqual(evaluateMineTarget(bot, createMovementPolicy(), target, flatWorld(), 0), {
+    kind: "prohibited",
+    reason: "lava a drop could spill into, 0 blocks available for placement",
+  });
+  lavaThere = false;
+  assert.deepEqual(lavaClosuresOf(bot, target.position), [], "a closed pocket is no spill path");
+});

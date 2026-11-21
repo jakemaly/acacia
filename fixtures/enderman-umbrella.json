@@ -1,0 +1,40 @@
+{
+  "id": "enderman-umbrella",
+  "name": "Enderman umbrella",
+  "description": "Build and use a canopy to kill a fixed nearby Enderman, then leave the shelter after the area is clear.",
+  "version": 1,
+  "seed": "61004",
+  "worldType": "flat",
+  "difficulty": "normal",
+  "controller": {
+    "type": "tool",
+    "name": "hunt_endermen_under_umbrella",
+    "arguments": {
+      "time_limit_ms": 180000,
+      "absence_window_ms": 5000,
+      "rationale": "Verify the prepared shelter, eliminate the nearby Enderman, and leave once the area is clear.",
+      "response_format": "json"
+    }
+  },
+  "timeLimitMs": 240000,
+  "prepare": [
+    "/gamerule doMobSpawning false",
+    "/fill -6 -60 -6 12 -60 6 minecraft:stone",
+    "/item replace entity Acacia weapon.mainhand with minecraft:diamond_sword",
+    "/give Acacia minecraft:cobblestone 16",
+    "/tp Acacia 0.5 -59 0.5",
+    "/summon minecraft:enderman 2.5 -59 2.5 {NoAI:1b,PersistenceRequired:1b,Health:40.0f}"
+  ],
+  "checks": [
+    { "kind": "healthAtLeast", "value": 1 },
+    { "kind": "mobCountAtMost", "mob": "enderman", "count": 0 },
+    { "kind": "blockAt", "pos": { "x": -1, "y": -57, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 0, "y": -57, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 1, "y": -57, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 2, "y": -57, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 3, "y": -57, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 1, "y": -59, "z": 0 }, "name": "cobblestone" },
+    { "kind": "blockAt", "pos": { "x": 1, "y": -58, "z": 0 }, "name": "cobblestone" },
+    { "kind": "positionWithin", "center": { "x": 0.5, "y": -59, "z": -0.5, "radius": 0.7 } }
+  ]
+}

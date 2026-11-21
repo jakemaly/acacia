@@ -1,0 +1,23 @@
+{
+  "id": "water-bucket-landing",
+  "name": "Water bucket landing",
+  "description": "Fall from a fixed height, survive the landing, reach the floor, and recover the water bucket.",
+  "version": 1,
+  "seed": "61001",
+  "worldType": "flat",
+  "difficulty": "peaceful",
+  "controller": { "type": "idle" },
+  "timeLimitMs": 120000,
+  "prepare": [
+    "/gamerule doMobSpawning false",
+    "/gamerule naturalRegeneration false",
+    "/fill -4 -60 -4 4 -60 4 minecraft:stone",
+    "/give Acacia minecraft:water_bucket 1",
+    "/tp Acacia 0.5 21 0.5"
+  ],
+  "checks": [
+    { "kind": "healthAtLeast", "value": 19 },
+    { "kind": "positionWithin", "center": { "x": 0.5, "y": -59, "z": 0.5, "radius": 2 } },
+    { "kind": "inventoryAtLeast", "item": "water_bucket", "count": 1 }
+  ]
+}

@@ -17,7 +17,7 @@ const serverImage = 'eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817b
 export const mineImage = 'minecraft-mine-ai:acacia-fork-compat';
 const revision = 'de4fef3260424d973bf81d0eaa15ff1a2f73ecff';
 const forkRepository = 'https://github.com/jakemaly/mine-ai-mcp';
-const forkCommit = 'a8ca9f9cfacd33be12448a4a55f97cc210a37b56';
+const forkCommit = '396b021b443ea009bea696fa185489d06bb95ce0';
 const jarHash = '4707d00eb834b446575d89a61a11b5d548d8c001';
 const bot = 'Acacia';
 const advancement = 'minecraft:end/kill_dragon';
@@ -197,16 +197,24 @@ export function startRun(config) {
       const inspected = await docker(['image', 'inspect', selectedImage], { timeout: 10_000 });
       const [image] = JSON.parse(inspected.stdout);
       const labels = image.Config.Labels ?? {};
-      if (labels['org.opencontainers.image.revision'] !== revision ||
-          labels['org.opencontainers.image.base-revision'] !== revision ||
-          labels['org.opencontainers.image.source'] !== forkRepository ||
-          !/^[a-f0-9]{40}$/.test(labels['org.opencontainers.image.fork-revision'] ?? '') ||
-          (!config.lab?.candidateImage && labels['org.opencontainers.image.fork-revision'] !== forkCommit)) {
-        throw new Error('The Mine AI image does not match the pinned private fork and upstream base.');
+      const sourceCommit = labels['org.opencontainers.image.acacia-revision'];
+      const sourceWorkingTree = labels['org.opencontainers.image.acacia-working-tree'];
+      const sourceDigest = labels['org.opencontainers.image.acacia-source-digest'];
+      const monorepoImage = /^[a-f0-9]{40}$/.test(sourceCommit ?? '') &&
+        ['clean', 'dirty'].includes(sourceWorkingTree) && /^[a-f0-9]{64}$/.test(sourceDigest ?? '') &&
+        labels['org.opencontainers.image.source'] === 'https://github.com/jakemaly/acacia';
+      const validLegacyImage = labels['org.opencontainers.image.revision'] === revision &&
+        labels['org.opencontainers.image.base-revision'] === revision &&
+        labels['org.opencontainers.image.source'] === forkRepository &&
+        /^[a-f0-9]{40}$/.test(labels['org.opencontainers.image.fork-revision'] ?? '') &&
+        (config.lab?.candidateImage || labels['org.opencontainers.image.fork-revision'] === forkCommit);
+      if (!monorepoImage && !validLegacyImage) {
+        throw new Error('The Mine AI image does not identify a supported Acacia build.');
       }
-      const runtime = { image: image.Id, imageDigest: image.Id, forkRepository,
+      const runtime = { image: image.Id, imageDigest: image.Id, forkRepository: labels['org.opencontainers.image.source'],
         forkCommit: labels['org.opencontainers.image.fork-revision'],
         forkWorkingTree: labels['org.opencontainers.image.fork-working-tree'] ?? 'clean',
+        ...(monorepoImage ? { sourceCommit, sourceWorkingTree, sourceDigest } : {}),
         jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
         hardcore, profile, model: modelId, thinkingLevel,
         lab: config.lab?.summary, candidateImage: Boolean(config.lab?.candidateImage) };

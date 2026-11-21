@@ -1,6 +1,6 @@
 # Mine AI Minecraft
 
-Pi plays a fresh Minecraft 1.21.4 Survival world on a randomly generated seed. [Mine AI MCP](https://github.com/aibengineering/mine-ai-mcp/tree/de4fef3260424d973bf81d0eaa15ff1a2f73ecff) owns the bot Acacia, actions, and survival reflexes. The dashboard starts and stops one run, shows tool activity, and embeds the bot’s first-person view. The Minecraft client can join as spectator.
+Pi plays a fresh Minecraft 1.21.4 Survival world on a randomly generated seed. The [Mine AI MCP server](mine-ai-mcp/) owns the bot Acacia, actions, and survival reflexes. It is based on [Mine AI MCP](https://github.com/aibengineering/mine-ai-mcp). The dashboard starts and stops one run, shows tool activity, and embeds the bot’s first-person view. The Minecraft client can join as spectator.
 
 Pi uses GPT-6 Luna at high reasoning through ChatGPT sign-in. Select **Survival** or **Hardcore** before pressing **Start**. Both modes share the goal and milestone priorities informed by the [published Mine AI run](https://huggingface.co/datasets/aibengineering/beat-the-game-minecraft/resolve/main/prompt.txt) (CC BY 4.0, aibengineering); Hardcore adds one-life and nearby-recovery guidance. The original win used Claude Opus 5 at high effort in Claude Code. Tool-call rationales state the immediate objective and relevant observation. Each attempt begins from an empty world. Success requires the server to record the bot’s `minecraft:end/kill_dragon` advancement.
 
@@ -11,11 +11,11 @@ Use Linux, Node 24.15+, and Docker Engine 28+ with isolated bridge support. Acce
 ```sh
 npm ci
 docker pull eclipse-temurin:21-jre@sha256:a80c51f2d09a3e7e00d521f1c817bbceb6b3be94109b4a784d46078099882dda
-MINE_AI_FORK_DIR="$HOME/.local/src/mine-ai-mcp" bash deploy/build-private-mcp-image.sh
+npm run build:bot
 npm start
 ```
 
-The build script fetches the pinned private `acacia-compat` commit on the host, verifies it, and stages only its tracked source files for Docker. Git credentials and `.git` never enter the image. The run manifest keeps `revision` for the upstream base and records the private fork repository, fork commit, and image digest separately. The previous `minecraft-mine-ai:acacia-foreground` image remains available for rollback.
+Run `npm run build:bot` after editing the MCP server. It builds from the current checkout, including non-ignored new and modified source files. The next run uses the new image. Run manifests record the image ID, source commit, working-tree state and source snapshot digest. The previous image is retained as `minecraft-mine-ai:previous`.
 
 Open http://127.0.0.1:2718. The default Pi credential directory is `~/.local/share/minecraft-agent/pi`. To sign in or refresh an expired login, run `PI_CODING_AGENT_DIR="$HOME/.local/share/minecraft-agent/pi" npx --no-install pi` and use `/login` to sign in with ChatGPT. Exit Pi before starting a run. The first run downloads and verifies Mojang’s server JAR. To use an existing verified copy, set `MINECRAFT_SERVER_JAR` to its absolute path.
 
@@ -62,7 +62,7 @@ Find collection indexes at `$MINECRAFT_RUNS/checkpoints/SESSION/RUN/index.json`.
 
 ## Mine Labs
 
-Open **Runs** to launch one isolated fixture or replay one published checkpoint. Fixtures are versioned JSON files under `fixtures/`; each describes its seed, setup, controller activation, time limit, and independently checked success conditions. Blaze requires the Candidate build because the pinned Current image does not contain its tool. Build a candidate from an MCP checkout with `MINE_AI_FORK_DIR=/path/to/mine-ai-mcp ./deploy/build-candidate-mcp-image.sh`, then set `MINE_AI_CANDIDATE_IMAGE=minecraft-mine-ai:candidate` in `~/.config/minecraft-mine-ai.env` and restart the dashboard service. The builder snapshots tracked and non-ignored source files into a temporary context and leaves the checkout untouched. Each run records the image digest, fork revision, and whether the source checkout had working tree edits.
+Open **Runs** to launch one isolated fixture or replay one published checkpoint. Fixtures are versioned JSON files under `fixtures/`; each describes its seed, setup, controller activation, time limit, and independently checked success conditions. Blaze requires the separately configured Candidate image, which contains its experimental tool. Set `MINE_AI_CANDIDATE_IMAGE` in `~/.config/minecraft-mine-ai.env` to use an existing candidate image.
 
 Checkpoint replays restore the selected world into a new run directory and resume the saved Pi conversation when present. A world-only checkpoint needs a task. Optional inventory or block checks can stop a replay as soon as the independent verifier confirms them; without checks, there is no task-success verdict. Death, the time limit, and Stop also end the attempt. Open the saved run in **Runs** to inspect its evidence or repeat it. New fixture authoring from the dashboard is a later step; add versioned fixture files in the repository for now.
 
@@ -74,7 +74,7 @@ To play the restored world locally, start the pinned 1.21.4 server JAR from the 
 
 ## Verify
 
-Run `npm run check` and `npm test`. After building the image, run `MINECRAFT_SMOKE=1 node --test test/smoke.test.mjs` for the Docker and Pi integration tests, including a forced Hardcore death and fresh-world restart. Run `MINECRAFT_CHECKPOINT_SMOKE=1 node --test --test-name-pattern='natural Hardcore autosave' test/smoke.test.mjs` to verify collection and replay across a natural autosave.
+Run `npm run check` and `npm test`. In `mine-ai-mcp`, run `bun install --frozen-lockfile` and `bun run test`. After building the image, run `MINECRAFT_SMOKE=1 node --test test/smoke.test.mjs` for the Docker and Pi integration tests, including a forced Hardcore death and fresh-world restart. Run `MINECRAFT_CHECKPOINT_SMOKE=1 node --test --test-name-pattern='natural Hardcore autosave' test/smoke.test.mjs` to verify collection and replay across a natural autosave.
 
 ## Overseer
 

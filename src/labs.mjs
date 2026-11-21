@@ -13,6 +13,7 @@ export async function labFixtures(directory = new URL('../fixtures/', import.met
   return Promise.all(entries.map(async entry => {
     const fixture = JSON.parse(await readFile(typeof root === 'string' ? join(root, entry.name) : new URL(entry.name, root), 'utf8'));
     if (!fixtureId.test(fixture.id) || fixture.id !== entry.name.slice(0, -5)) throw new Error(`Invalid lab fixture: ${entry.name}`);
+    validateLabChecks(fixture.checks);
     return fixture;
   }));
 }
@@ -59,6 +60,21 @@ export function validateLabChecks(checks) {
   for (const check of checks) {
     if (!check || typeof check !== 'object') throw new Error('Each success check must be an object.');
     if (['healthAtLeast', 'foodAtLeast'].includes(check.kind) && Number.isFinite(check.value) && check.value >= 0) continue;
+    if (check.kind === 'airAtLeast' && Number.isFinite(check.value) && check.value >= 0) continue;
+    if (check.kind === 'notInWater') continue;
+    if (check.kind === 'positionWithin' && check.center &&
+        ['x', 'y', 'z'].every(axis => Number.isFinite(check.center[axis]) && Math.abs(check.center[axis]) <= 30_000_000) &&
+        Number.isFinite(check.center.radius) && check.center.radius > 0 && check.center.radius <= 8) continue;
+    if (check.kind === 'equippedItem' && /^[a-z0-9_]+$/.test(check.item ?? '') &&
+        ['main', 'hotbar', 'head', 'torso', 'legs', 'feet', 'off-hand'].includes(check.location) &&
+        (check.durabilityAtLeast === undefined || (Number.isFinite(check.durabilityAtLeast) && check.durabilityAtLeast >= 0))) continue;
+    if (check.kind === 'mobCountAtMost' && /^[a-z0-9_]+$/.test(check.mob ?? '') &&
+        Number.isInteger(check.count) && check.count >= 0) continue;
+    if (check.kind === 'toolResult' && validResultPath(check.path) &&
+        ((Object.hasOwn(check, 'equals') && !Object.hasOwn(check, 'atLeast') &&
+          ['string', 'number', 'boolean'].includes(typeof check.equals) &&
+          (typeof check.equals !== 'number' || Number.isFinite(check.equals))) ||
+         (!Object.hasOwn(check, 'equals') && Number.isFinite(check.atLeast) && check.atLeast >= 0))) continue;
     const validCenter = check.center === undefined || (check.center &&
       /^minecraft:[a-z0-9_]+$/.test(check.center.dimension ?? '') &&
       ['x', 'y', 'z'].every(axis => Number.isFinite(check.center[axis]) && Math.abs(check.center[axis]) <= 30_000_000) &&
@@ -78,6 +94,36 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
     let passed = false;
     if (check.kind === 'healthAtLeast') actual = evidence.status?.vitals?.health, passed = actual >= check.value;
     if (check.kind === 'foodAtLeast') actual = evidence.status?.vitals?.food, passed = actual >= check.value;
+    if (check.kind === 'airAtLeast') {
+      actual = evidence.status?.vitals?.airSupplyTicks;
+      passed = Number.isFinite(actual) && actual >= check.value;
+    }
+    if (check.kind === 'notInWater') {
+      actual = evidence.status?.position?.inWater;
+      passed = actual === false;
+    }
+    if (check.kind === 'positionWithin') {
+      const position = evidence.status?.position;
+      actual = position && ['x', 'y', 'z'].every(axis => Number.isFinite(position[axis]))
+        ? Math.hypot(position.x - check.center.x, position.y - check.center.y, position.z - check.center.z)
+        : null;
+      passed = actual !== null && actual <= check.center.radius;
+    }
+    if (check.kind === 'equippedItem') {
+      const stack = evidence.status?.inventory?.stacks?.find(item => item.name === check.item && item.location === check.location);
+      actual = stack ? { name: stack.name, location: stack.location, durability: stack.durability ?? null } : null;
+      passed = stack !== undefined && (check.durabilityAtLeast === undefined ||
+        (Number.isFinite(stack.durability?.remaining) && stack.durability.remaining >= check.durabilityAtLeast));
+    }
+    if (check.kind === 'mobCountAtMost') {
+      const mobs = evidence.status?.nearby?.mobs;
+      actual = Array.isArray(mobs) ? mobs.filter(mob => mob.name === check.mob).reduce((sum, mob) => sum + mob.count, 0) : null;
+      passed = actual !== null && actual <= check.count;
+    }
+    if (check.kind === 'toolResult') {
+      actual = resultAt(evidence.controllerResult, check.path);
+      passed = Object.hasOwn(check, 'equals') ? actual === check.equals : Number.isFinite(actual) && actual >= check.atLeast;
+    }
     if (check.kind === 'inventoryAtLeast') {
       actual = itemCount(evidence.status, check.item);
       passed = actual !== null && actual >= check.count;
@@ -104,6 +150,24 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
     return { check, actual: actual ?? null, passed };
   });
   return { passed: results.length > 0 && results.every(result => result.passed), checks: results };
+}
+
+function validResultPath(path) {
+  return typeof path === 'string' && path.split('.').every(part => /^[A-Za-z][A-Za-z0-9]*$/.test(part) &&
+    !['__proto__', 'prototype', 'constructor'].includes(part));
+}
+
+function resultAt(controllerResult, path) {
+  if (!controllerResult || !validResultPath(path)) return null;
+  const structured = controllerResult.result ?? controllerResult;
+  const data = structured?.response?.data;
+  const action = data?.output?.result ?? data?.result ?? structured?.result ?? structured;
+  let current = action;
+  for (const part of path.split('.')) {
+    if (current === null || typeof current !== 'object' || !Object.hasOwn(current, part)) return null;
+    current = current[part];
+  }
+  return current ?? null;
 }
 
 function nearbyItemIsInsideCheckArea(item, check, status, radius) {
