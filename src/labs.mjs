@@ -91,7 +91,7 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
       const carried = itemCount(evidence.status, check.item) ?? 0;
       const radius = check.center?.radius ?? 4;
       const observedNearby = evidence.status?.nearby?.droppedItems
-        ?.filter(item => item.name === check.item && Number.isFinite(item.distance) && item.distance <= radius)
+        ?.filter(item => item.name === check.item && nearbyItemIsInsideCheckArea(item, check, evidence.status, radius))
         .reduce((sum, item) => sum + item.count, 0) ?? 0;
       const nearby = Math.max(evidence.groundItems?.[check.item] ?? 0, observedNearby);
       actual = { carried, nearby, total: carried + nearby };
@@ -104,6 +104,18 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
     return { check, actual: actual ?? null, passed };
   });
   return { passed: results.length > 0 && results.every(result => result.passed), checks: results };
+}
+
+function nearbyItemIsInsideCheckArea(item, check, status, radius) {
+  if (!check.center) return Number.isFinite(item.distance) && item.distance <= radius;
+  const dimension = status?.dimension;
+  const namespacedDimension = typeof dimension === 'string'
+    ? dimension.includes(':') ? dimension : `minecraft:${dimension}`
+    : null;
+  const position = item.position;
+  if (namespacedDimension !== check.center.dimension ||
+      !position || !['x', 'y', 'z'].every(axis => Number.isFinite(position[axis]))) return false;
+  return Math.hypot(position.x - check.center.x, position.y - check.center.y, position.z - check.center.z) <= radius;
 }
 
 export async function readLabEvidence(client, checks, signal) {

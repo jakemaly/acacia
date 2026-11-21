@@ -115,10 +115,16 @@ test('nearby-item checks use the same bounded radius as the fixture evidence col
     center: { dimension: 'minecraft:the_nether', x: 117.5, y: 72.5, z: 681.5, radius: 6 } };
   assert.deepEqual(validateLabChecks([check]), [check]);
   assert.equal(evaluateLabChecks([check], {
-    status: { inventory: { stacks: [] }, nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 5.9 }] } },
+    status: { dimension: 'the_nether', inventory: { stacks: [] },
+      nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 99, position: { x: 123, y: 72.5, z: 681.5 } }] } },
   }).passed, true);
   assert.equal(evaluateLabChecks([check], {
-    status: { inventory: { stacks: [] }, nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 6.1 }] } },
+    status: { dimension: 'the_nether', inventory: { stacks: [] },
+      nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 0.1, position: { x: 124, y: 72.5, z: 681.5 } }] } },
+  }).passed, false);
+  assert.equal(evaluateLabChecks([check], {
+    status: { dimension: 'minecraft:overworld', inventory: { stacks: [] },
+      nearby: { droppedItems: [{ name: 'blaze_rod', count: 20, distance: 0.1, position: { x: 118, y: 72.5, z: 681.5 } }] } },
   }).passed, false);
   assert.throws(() => validateLabChecks([{ ...check, center: { ...check.center, radius: 9 } }]), /unsupported/);
 });
