@@ -117,7 +117,9 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         }
         if (url.pathname === '/api/lab') {
           const [fixtures, checkpoints] = await Promise.all([labFixtures(), labCheckpoints(config.root)]);
-          return json(200, { fixtures: fixtures.map(({ id, name, description, version, timeLimitMs }) => ({ id, name, description, version, timeLimitMs })),
+          return json(200, { fixtures: fixtures.map(({ id, name, description, version, timeLimitMs, requiredBuild }) => ({
+            id, name, description, version, timeLimitMs, requiredBuild,
+          })),
             checkpoints: checkpoints.map(({ path: _path, ...checkpoint }) => checkpoint),
             candidateAvailable: Boolean(config.candidateImage), defaultBuild: mineImage });
         }
@@ -170,6 +172,9 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         if (input.fixtureId) {
           const fixture = (await labFixtures()).find(item => item.id === input.fixtureId);
           if (!fixture) return json(404, { error: 'Fixture unavailable.' });
+          if (fixture.requiredBuild && build !== fixture.requiredBuild) {
+            return json(400, { error: `${fixture.name} requires the ${fixture.requiredBuild} build.` });
+          }
           const limit = timeLimitMs ?? fixture.timeLimitMs;
           const summary = { type: 'fixture', fixtureId: fixture.id, fixtureName: fixture.name,
             fixtureVersion: fixture.version, build, timeLimitMs: limit };

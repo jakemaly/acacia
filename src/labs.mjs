@@ -85,8 +85,10 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
     }
     if (check.kind === 'inventoryOrNearbyAtLeast') {
       const carried = itemCount(evidence.status, check.item) ?? 0;
-      const nearby = evidence.groundItems?.[check.item] ??
-        evidence.status?.nearby?.droppedItems?.filter(item => item.name === check.item).reduce((sum, item) => sum + item.count, 0) ?? 0;
+      const observedNearby = evidence.status?.nearby?.droppedItems
+        ?.filter(item => item.name === check.item && Number.isFinite(item.distance) && item.distance <= 4)
+        .reduce((sum, item) => sum + item.count, 0) ?? 0;
+      const nearby = Math.max(evidence.groundItems?.[check.item] ?? 0, observedNearby);
       actual = { carried, nearby, total: carried + nearby };
       passed = actual.total >= check.count;
     }
@@ -100,14 +102,16 @@ export function evaluateLabChecks(checks, evidence, baseline = {}) {
 }
 
 export async function readLabEvidence(client, checks, signal) {
-  const statusReply = filterStatusPlayers(await client.callTool('view_status', { rationale: 'Verify the lab outcome from live Minecraft state.' }, { signal }));
+  const statusReply = filterStatusPlayers(await client.callTool('view_status', {
+    rationale: 'Verify the lab outcome from live Minecraft state.', response_format: 'json',
+  }, { signal }));
   const statusAction = actionResult(statusReply);
   const status = statusAction?.situation ?? null;
   const positions = checks.filter(check => check.kind === 'blockAt').map(check => check.pos);
   let blocks = [];
   if (positions.length) {
     const blockReply = await client.callTool('view_blocks', {
-      cells: positions, rationale: 'Verify the lab outcome at the configured Minecraft coordinates.',
+      cells: positions, rationale: 'Verify the lab outcome at the configured Minecraft coordinates.', response_format: 'json',
     }, { signal });
     blocks = actionResult(blockReply)?.blocks?.cells ?? [];
   }

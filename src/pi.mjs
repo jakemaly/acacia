@@ -21,6 +21,16 @@ function mcpDisconnected(error) {
     (error instanceof McpError && error.code === -32603 && error.message.startsWith('MCP response stream failed:'));
 }
 
+function labToolResultDetails(result) {
+  const message = (result?.content ?? []).filter(item => item.type === 'text')
+    .map(item => item.text).join('\n').slice(0, 4000);
+  return {
+    isError: Boolean(result?.isError),
+    ...(result?.details?.structuredContent !== undefined && { result: result.details.structuredContent }),
+    ...(result?.isError && message && { error: message }),
+  };
+}
+
 function assistantText(message) {
   if (typeof message?.text === 'string') return message.text;
   if (!Array.isArray(message?.content)) return '';
@@ -173,7 +183,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
           const settled = await Promise.race([execution, delay(1000, null, { ref: false })]);
           const details = settled?.type === 'error'
             ? { isError: true, error: settled.error.message }
-            : settled ? { isError: Boolean(settled.result?.isError), result: settled.result?.details?.structuredContent }
+            : settled ? labToolResultDetails(settled.result)
               : { isError: true, outcome: 'stopped' };
           recordToolEnd({ ...details, ...(outcome && { outcome }) });
         };
@@ -194,10 +204,10 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
             return `Lab tool ${tool.label} reached an independently verified result.`;
           }
           const controllerResult = completed.result;
-          recordToolEnd({ isError: controllerResult.isError, result: controllerResult.details?.structuredContent });
+          recordToolEnd(labToolResultDetails(controllerResult));
           monitorAbort.abort();
           const { evidence, outcome } = await assessLab(baseline);
-          await onLabOutcome?.({ ...outcome, evidence, controllerResult: controllerResult.details?.structuredContent });
+          await onLabOutcome?.({ ...outcome, evidence, controllerResult: labToolResultDetails(controllerResult) });
           return `Lab tool ${tool.label} finished. Verified result: ${outcome.passed ? 'passed' : 'failed'}.`;
         } finally {
           monitorAbort.abort();

@@ -200,6 +200,7 @@ export function startRun(config) {
       }
       const runtime = { image: image.Id, imageDigest: image.Id, forkRepository,
         forkCommit: labels['org.opencontainers.image.fork-revision'],
+        forkWorkingTree: labels['org.opencontainers.image.fork-working-tree'] ?? 'clean',
         jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
         hardcore, profile, model: modelId, thinkingLevel,
         lab: config.lab?.summary, candidateImage: Boolean(config.lab?.candidateImage) };
@@ -359,7 +360,9 @@ export function startRun(config) {
           onLabOutcome(outcome) {
             run.labOutcome = outcome;
             run.labStopReason = outcome.passed ? 'verified_outcome' : 'criteria_failed';
-            finish(outcome.passed ? 'Lab outcome passed.' : 'Lab controller finished without satisfying its checks.');
+            run.detail = outcome.passed ? 'Lab outcome passed.'
+              : outcome.controllerResult?.error ?? 'Lab controller finished without satisfying its checks.';
+            finish(run.detail);
             abort.abort();
           },
         });
@@ -387,6 +390,7 @@ export function startRun(config) {
     } catch (failure) {
       stopped = signal.reason === operatorStop;
       if (!stopped && !proof && !run.labStopReason) error ??= signal.reason?.message ?? failure.message;
+      if (config.lab && !run.labStopReason && !stopped) run.labStopReason = 'run_error';
     } finally {
       stopped ||= signal.reason === operatorStop;
       run.state = 'saving';
@@ -428,6 +432,7 @@ export function startRun(config) {
         }
       }
       await collector?.finish(hardcore ? death : undefined);
+      if (config.lab && !run.labStopReason) run.labStopReason = 'incomplete';
       const labResult = config.lab ? labTerminalResult(run, { death, error, operatorStop }) : undefined;
       const state = labResult?.state ?? (proof ? 'won' : stopped ? 'stopped' : hardcore && death ? 'dead' : 'incomplete');
       const detail = proof ?? (config.lab
@@ -532,6 +537,8 @@ function labTerminalResult(run, { death, error, operatorStop }) {
     death: { state: 'dead', detail: death?.cause ?? 'Acacia died during the lab attempt.' },
     time_limit: { state: 'timed_out', detail: 'Lab time limit reached.' },
     operator_stop: { state: 'stopped', detail: operatorStop.message },
+    run_error: { state: 'failed', detail: error ?? 'The lab run failed before it could verify an outcome.' },
+    incomplete: { state: 'incomplete', detail: error ?? run.detail ?? 'The attempt ended without a verified outcome.' },
   };
   return terminal[run.labStopReason] ?? { state: 'incomplete', detail: error ?? 'The lab attempt ended without a verified outcome.' };
 }

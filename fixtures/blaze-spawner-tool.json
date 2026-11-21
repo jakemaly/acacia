@@ -2,7 +2,8 @@
   "id": "blaze-spawner-tool",
   "name": "Blaze spawner tool",
   "description": "Farm 20 blaze rods from the verified Nether spawner, stay alive, and remove the spawner and support block.",
-  "version": 1,
+  "version": 5,
+  "requiredBuild": "candidate",
   "seed": "12345",
   "difficulty": "peaceful",
   "controller": {
@@ -13,7 +14,8 @@
       "count": 20,
       "observe_for_ms": 120000,
       "time_limit_ms": 1200000,
-      "disable_spawner_when_done": true
+      "disable_spawner_when_done": true,
+      "rationale": "Farm twenty blaze rods from the prepared shelter, then remove the spawner and its support."
     }
   },
   "timeLimitMs": 1200000,
@@ -25,6 +27,7 @@
     "/execute in minecraft:the_nether run fill 117 73 676 117 79 680 minecraft:air",
     "/execute in minecraft:the_nether run fill 117 73 682 117 79 686 minecraft:air",
     "/execute in minecraft:the_nether run fill 117 76 681 117 79 681 minecraft:air",
+    "/execute in minecraft:the_nether run fill 116 73 680 118 74 682 minecraft:air",
     "/execute in minecraft:the_nether run fill 113 72 676 123 72 686 minecraft:nether_bricks",
     "/execute in minecraft:the_nether run fill 113 73 676 113 79 686 minecraft:nether_bricks",
     "/execute in minecraft:the_nether run fill 123 73 676 123 79 686 minecraft:nether_bricks",
@@ -33,11 +36,10 @@
     "/execute in minecraft:the_nether run fill 113 80 676 123 80 686 minecraft:nether_bricks",
     "/execute in minecraft:the_nether run fill 116 73 680 118 73 682 minecraft:nether_brick_slab[type=bottom]",
     "/execute in minecraft:the_nether run setblock 117 73 681 minecraft:air",
-    "/execute in minecraft:the_nether run setblock 117 74 681 minecraft:nether_bricks",
     "/execute in minecraft:the_nether run setblock 117 72 681 minecraft:nether_brick_slab[type=bottom]",
+    "/execute in minecraft:the_nether run setblock 117 74 681 minecraft:nether_bricks",
     "/execute in minecraft:the_nether run data merge block 117 75 681 {SpawnRange:2}",
     "/execute in minecraft:the_nether run tp Acacia 117.5 72.5 681.5",
-    "/give Acacia minecraft:diamond_pickaxe",
     "/give Acacia minecraft:cooked_beef 64",
     "/item replace entity Acacia armor.head with minecraft:diamond_helmet",
     "/item replace entity Acacia armor.chest with minecraft:diamond_chestplate",
@@ -45,6 +47,7 @@
     "/item replace entity Acacia armor.feet with minecraft:diamond_boots",
     "/item replace entity Acacia weapon.mainhand with minecraft:diamond_sword[minecraft:enchantments={levels:{\"minecraft:sharpness\":5,\"minecraft:looting\":3}}]",
     "/item replace entity Acacia weapon.offhand with minecraft:shield",
+    "/give Acacia minecraft:diamond_pickaxe",
     "/effect give Acacia minecraft:fire_resistance 1800 0 true",
     "/effect give Acacia minecraft:regeneration 1800 0 true"
   ],

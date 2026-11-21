@@ -9,6 +9,10 @@ const modelLabel = value => {
   return match ? `GPT-${match[1]} ${title(match[2])}` : String(value ?? '');
 };
 const toolLabel = value => (value ?? 'tool').replace(/^mcp__minecraft__/, '').replaceAll('_', ' ');
+const labStopLabel = reason => ({ verified_outcome: 'verified success', criteria_failed: 'checks failed',
+  death: 'death', time_limit: 'time limit', operator_stop: 'operator stop', run_error: 'setup or run error',
+  incomplete: 'no verified outcome' })[reason]
+  ?? (reason ? title(reason.replaceAll('_', ' ')) : 'not recorded');
 const timeline = $('timeline');
 let run = {};
 let selected = null;
@@ -449,7 +453,20 @@ function populateLabCatalog(catalog) {
   const unavailable = ['starting', 'running', 'saving', 'reflecting'].includes(run.state);
   for (const id of ['lab-fixture', 'lab-checkpoint', 'lab-build', 'lab-instruction', 'lab-time-limit', 'lab-item',
     'lab-item-count', 'lab-block-name', 'lab-block-x', 'lab-block-y', 'lab-block-z']) $(id).disabled = unavailable;
-  $('run-fixture').disabled = unavailable || !catalog.fixtures.length;
+  const updateFixtureBuild = () => {
+    const selected = catalog.fixtures.find(item => item.id === fixture.value);
+    const required = selected?.requiredBuild;
+    const build = $('lab-build');
+    const available = [...build.options].some(option => option.value === required);
+    if (required && available) build.value = required;
+    const supported = !required || (available && build.value === required);
+    $('run-fixture').disabled = unavailable || !selected || !supported;
+    $('lab-launch-status').textContent = required && !available
+      ? `${selected.name} needs the Candidate build. Configure MINE_AI_CANDIDATE_IMAGE to enable it.` : '';
+  };
+  fixture.onchange = updateFixtureBuild;
+  $('lab-build').onchange = updateFixtureBuild;
+  updateFixtureBuild();
   $('run-checkpoint').disabled = unavailable || !catalog.checkpoints.length;
   if (!catalog.checkpoints.length) checkpoint.add(new Option('No saved checkpoints', ''));
 }
@@ -515,11 +532,11 @@ async function showRun(saved) {
       <p class="run-library-meta">${saved.lab.type === 'fixture'
         ? `Fixture ${esc(saved.lab.fixtureId)} · version ${esc(saved.lab.fixtureVersion)}`
         : `Checkpoint ${esc(saved.lab.checkpointId)}`}</p>
-      <p class="run-library-meta">${esc(saved.lab.build ?? 'current')} build · fork ${esc(saved.runtime?.forkCommit ?? 'unknown')} · image ${esc(saved.runtime?.imageDigest ?? 'unknown')}</p>
+      <p class="run-library-meta">${esc(saved.lab.build ?? 'current')} build · fork ${esc(saved.runtime?.forkCommit ?? 'unknown')}${saved.runtime?.forkWorkingTree === 'dirty' ? ' + working tree edits' : ''} · image ${esc(saved.runtime?.imageDigest ?? 'unknown')}</p>
       ${saved.lab.type === 'checkpoint' ? `<p class="run-library-meta">${saved.lab.context
         ? `Conversation saved ${Math.max(0, Math.round((saved.lab.contextAgeMs ?? 0) / 60_000))} minutes before the world save`
         : 'World saved without a conversation'}</p>` : ''}
-      <p class="trace-text">Stopped: ${esc(saved.labStopReason ?? 'unknown')}</p>
+      <p class="trace-text">Stopped: ${esc(labStopLabel(saved.labStopReason))}</p>
       ${saved.labOutcome ? `<pre class="trace-output lab-result-evidence">${esc(JSON.stringify(saved.labOutcome, null, 2))}</pre>` : ''}
       <button id="repeat-lab" type="button">Repeat</button>
     </section>` : '';
