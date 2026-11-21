@@ -60,6 +60,12 @@ Collection requires GNU tar, zstd, nice, and ionice on the dashboard host. The c
 
 Find collection indexes at `$MINECRAFT_RUNS/checkpoints/SESSION/RUN/index.json`. Each index records accepted and skipped saves the interval between observed autosaves, and the age of retained checkpoints at the first observed danger. Each retained checkpoint contains the world and can include a bounded Pi transcript. The transcript ends at a completed decision boundary at or before the player save and can precede the world by the age recorded in its metadata.
 
+## Mine Labs
+
+Open **Runs** to launch one isolated fixture or replay one published checkpoint. Fixtures are versioned JSON files under `fixtures/`; each describes its seed, setup, controller activation, time limit, and independently checked success conditions. Fixture attempts use the pinned current Mine AI image by default. To test a candidate MCP build, build and qualify its image, then set `MINE_AI_CANDIDATE_IMAGE` in `~/.config/minecraft-mine-ai.env` to that local image tag and restart the dashboard service. The run record stores the resolved image digest and fork revision.
+
+Checkpoint replays restore the selected world into a new run directory and resume the saved Pi conversation when present. A world-only checkpoint needs a task. Optional inventory or block checks can stop a replay as soon as the independent verifier confirms them; without checks, there is no task-success verdict. Death, the time limit, and Stop also end the attempt. Open the saved run in **Runs** to inspect its evidence or repeat it. New fixture authoring from the dashboard is a later step; add versioned fixture files in the repository for now.
+
 ```sh
 node src/checkpoints.mjs restore "$MINECRAFT_RUNS/checkpoints/SESSION/RUN/CHECKPOINT" /path/to/new-replay-directory
 ```

@@ -1,0 +1,25 @@
+{
+  "id": "hunger-reflex",
+  "name": "Hunger reflex",
+  "description": "An idle Acacia should eat carried bread when hunger is low.",
+  "version": 1,
+  "seed": "0",
+  "worldType": "flat",
+  "difficulty": "peaceful",
+  "controller": { "type": "idle" },
+  "timeLimitMs": 120000,
+  "startReadyTimeoutMs": 120000,
+  "startWhen": { "foodAtMost": 10 },
+  "prepare": [
+    "/gamerule doMobSpawning false",
+    "/gamerule naturalRegeneration true",
+    "/give Acacia minecraft:bread 3",
+    "/effect give Acacia minecraft:hunger 120 255 true"
+  ],
+  "startCommands": ["/effect clear Acacia minecraft:hunger"],
+  "checks": [
+    { "kind": "foodAtLeast", "value": 11 },
+    { "kind": "inventoryBelow", "item": "bread", "count": 3 },
+    { "kind": "healthAtLeast", "value": 1 }
+  ]
+}

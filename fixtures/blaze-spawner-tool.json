@@ -1,0 +1,58 @@
+{
+  "id": "blaze-spawner-tool",
+  "name": "Blaze spawner tool",
+  "description": "Farm 20 blaze rods from the verified Nether spawner, stay alive, and remove the spawner and support block.",
+  "version": 1,
+  "seed": "12345",
+  "difficulty": "peaceful",
+  "controller": {
+    "type": "tool",
+    "name": "farm_blaze_spawner",
+    "arguments": {
+      "spawner_position": { "x": 117, "y": 75, "z": 681 },
+      "count": 20,
+      "observe_for_ms": 120000,
+      "time_limit_ms": 1200000,
+      "disable_spawner_when_done": true
+    }
+  },
+  "timeLimitMs": 1200000,
+  "prepareBefore": ["/execute in minecraft:the_nether run forceload add 117 681"],
+  "preflight": [{ "dimension": "minecraft:the_nether", "pos": { "x": 117, "y": 75, "z": 681 }, "name": "spawner" }],
+  "prepare": [
+    "/execute in minecraft:the_nether run fill 114 73 676 116 79 686 minecraft:air",
+    "/execute in minecraft:the_nether run fill 118 73 676 122 79 686 minecraft:air",
+    "/execute in minecraft:the_nether run fill 117 73 676 117 79 680 minecraft:air",
+    "/execute in minecraft:the_nether run fill 117 73 682 117 79 686 minecraft:air",
+    "/execute in minecraft:the_nether run fill 117 76 681 117 79 681 minecraft:air",
+    "/execute in minecraft:the_nether run fill 113 72 676 123 72 686 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 113 73 676 113 79 686 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 123 73 676 123 79 686 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 114 73 676 122 79 676 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 114 73 686 122 79 686 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 113 80 676 123 80 686 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run fill 116 73 680 118 73 682 minecraft:nether_brick_slab[type=bottom]",
+    "/execute in minecraft:the_nether run setblock 117 73 681 minecraft:air",
+    "/execute in minecraft:the_nether run setblock 117 74 681 minecraft:nether_bricks",
+    "/execute in minecraft:the_nether run setblock 117 72 681 minecraft:nether_brick_slab[type=bottom]",
+    "/execute in minecraft:the_nether run data merge block 117 75 681 {SpawnRange:2}",
+    "/execute in minecraft:the_nether run tp Acacia 117.5 72.5 681.5",
+    "/give Acacia minecraft:diamond_pickaxe",
+    "/give Acacia minecraft:cooked_beef 64",
+    "/item replace entity Acacia armor.head with minecraft:diamond_helmet",
+    "/item replace entity Acacia armor.chest with minecraft:diamond_chestplate",
+    "/item replace entity Acacia armor.legs with minecraft:diamond_leggings",
+    "/item replace entity Acacia armor.feet with minecraft:diamond_boots",
+    "/item replace entity Acacia weapon.mainhand with minecraft:diamond_sword[minecraft:enchantments={levels:{\"minecraft:sharpness\":5,\"minecraft:looting\":3}}]",
+    "/item replace entity Acacia weapon.offhand with minecraft:shield",
+    "/effect give Acacia minecraft:fire_resistance 1800 0 true",
+    "/effect give Acacia minecraft:regeneration 1800 0 true"
+  ],
+  "activateCommands": ["/difficulty normal"],
+  "checks": [
+    { "kind": "healthAtLeast", "value": 1 },
+    { "kind": "inventoryOrNearbyAtLeast", "item": "blaze_rod", "count": 20 },
+    { "kind": "blockAt", "pos": { "x": 117, "y": 75, "z": 681 }, "name": "air" },
+    { "kind": "blockAt", "pos": { "x": 117, "y": 74, "z": 681 }, "name": "air" }
+  ]
+}

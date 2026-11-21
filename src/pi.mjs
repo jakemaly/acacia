@@ -1,6 +1,7 @@
 import { rename, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { McpClient, McpConnectionClosedError, McpError, McpSessionExpiredError, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
@@ -8,6 +9,7 @@ import { Agent, fetch } from 'undici';
 import { gameArguments, gameTools, statusContent } from './game-tools.mjs';
 import { filterStatusPlayers } from './status-privacy.mjs';
 import { followAction } from './action-wait.mjs';
+import { evaluateLabChecks, readLabEvidence } from './labs.mjs';
 
 export const modelId = 'gpt-6-luna';
 export const thinkingLevel = 'high';
@@ -61,8 +63,9 @@ export async function openai(agentDir) {
   return { runtime, model };
 }
 
-export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false, inference = openai }) {
-  const { runtime, model } = await inference(agentDir);
+export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false,
+  inference = openai, lab, collectLabEvidence, onLabOutcome, onLabControllerStart, resumeSession, resumeSettings, instruction }) {
+  const { runtime, model } = ['tool', 'idle'].includes(lab?.controller?.type) ? {} : await inference(agentDir);
   const dispatcher = new Agent({ connect: { socketPath: socket } });
   let client;
   async function connectMcp() {
@@ -117,14 +120,19 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         const compactStatus = tool.name === 'view_status' && args.detail !== 'full' && args.response_format !== 'json';
         args = gameArguments(tool, args);
         const target = tool.target ?? tool.name;
+        const activatesFixture = lab?.controller?.type === 'tool' && lab.controller.name === tool.name;
         const rawResult = tool.foreground
           ? await followAction({ name: target, args: { ...args, submission_id: randomUUID() },
             executionLimit: tool.executionLimit,
             call: (name, params) => callMinecraft(name, params, toolSignal, true),
+            onAccepted: activatesFixture ? onLabControllerStart : undefined,
             isTransportFailure: error => mcpDisconnected(error) || error instanceof McpSessionExpiredError,
             onProgress: progress => record('action_progress', { id, tool: tool.name, ...progress }),
-          })
-          : await callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
+          }) : await (async () => {
+            const pending = callMinecraft(target, args, toolSignal, tool.name === 'wait_for_action');
+            if (activatesFixture) await onLabControllerStart?.();
+            return pending;
+          })();
         const result = tool.name === 'view_status' ? filterStatusPlayers(rawResult) : rawResult;
         const response = result.structuredContent?.response;
         // Polling or retrieving an old result again does not make progress.
@@ -145,6 +153,71 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         return { content, details, isError: result.isError };
       },
     }));
+    if (lab && ['tool', 'idle'].includes(lab.controller?.type)) {
+      record('catalogue', { tools: catalogue, model: model?.id, labController: lab.controller.type });
+      const observe = () => readLabEvidence(client, lab.checks, signal);
+      const baseline = await observe();
+      if (lab.controller.type === 'tool') {
+        const tool = tools.find(candidate => candidate.label === lab.controller.name);
+        if (!tool) throw new Error(`The selected Mine AI image does not provide ${lab.controller.name}.`);
+        const id = randomUUID();
+        const startedAt = Date.now();
+        const toolName = `mcp__minecraft__${tool.label}`;
+        let toolEndRecorded = false;
+        const recordToolEnd = details => {
+          if (toolEndRecorded) return;
+          toolEndRecorded = true;
+          record('tool_execution_end', { id, tool: toolName, durationMs: Date.now() - startedAt, ...details });
+        };
+        const recordToolFinish = async outcome => {
+          const settled = await Promise.race([execution, delay(1000, null, { ref: false })]);
+          const details = settled?.type === 'error'
+            ? { isError: true, error: settled.error.message }
+            : settled ? { isError: Boolean(settled.result?.isError), result: settled.result?.details?.structuredContent }
+              : { isError: true, outcome: 'stopped' };
+          recordToolEnd({ ...details, ...(outcome && { outcome }) });
+        };
+        record('tool_execution_start', { id, tool: toolName, args: lab.controller.arguments });
+        const execution = tool.execute(id, lab.controller.arguments, signal).then(
+          result => ({ type: 'completed', result }), error => ({ type: 'error', error }),
+        );
+        const monitorAbort = new AbortController();
+        const monitorSignal = AbortSignal.any([signal, monitorAbort.signal]);
+        const monitoring = lab.checks.length
+          ? monitorLab(baseline, monitorSignal).then(outcome => ({ type: 'outcome', outcome }), error => ({ type: 'error', error }))
+          : null;
+        try {
+          const completed = await Promise.race([execution, ...(monitoring ? [monitoring] : [])]);
+          if (completed.type === 'error') throw completed.error;
+          if (completed.type === 'outcome') {
+            await recordToolFinish('stopped_after_verified_result');
+            return `Lab tool ${tool.label} reached an independently verified result.`;
+          }
+          const controllerResult = completed.result;
+          recordToolEnd({ isError: controllerResult.isError, result: controllerResult.details?.structuredContent });
+          monitorAbort.abort();
+          const { evidence, outcome } = await assessLab(baseline);
+          await onLabOutcome?.({ ...outcome, evidence, controllerResult: controllerResult.details?.structuredContent });
+          return `Lab tool ${tool.label} finished. Verified result: ${outcome.passed ? 'passed' : 'failed'}.`;
+        } finally {
+          monitorAbort.abort();
+          if (!toolEndRecorded) await recordToolFinish();
+        }
+      }
+      if (lab.controller.type === 'idle') {
+        let previous = baseline;
+        while (!signal.aborted) {
+          await delay(3000, undefined, { signal, ref: false });
+          const { evidence, outcome } = await assessLab(baseline, signal, previous);
+          previous = evidence;
+          if (!outcome.passed) continue;
+          await onLabOutcome?.({ ...outcome, evidence });
+          return 'Lab reflex fixture reached its independently verified outcome.';
+        }
+      }
+      throw new Error(`Unsupported lab controller: ${lab.controller?.type ?? 'missing'}.`);
+    }
+    if (lab && lab.controller?.type !== 'agent') throw new Error(`Unsupported lab controller: ${lab.controller?.type ?? 'missing'}.`);
     const settingsManager = SettingsManager.inMemory({
       // Leave room to summarize the transcript and for provider request overhead.
       compaction: { enabled: true, reserveTokens: Math.floor(model.contextWindow * 0.4) },
@@ -152,12 +225,14 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     });
     const resourceLoader = new DefaultResourceLoader({
       cwd: directory, agentDir, settingsManager, noExtensions: true, noSkills: true,
-      noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: [], systemPrompt: client.instructions,
+      noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: [],
+      systemPrompt: resumeSettings?.systemPrompt ?? client.instructions,
     });
     await resourceLoader.reload();
     ({ session } = await createAgentSession({
       cwd: directory, agentDir, model, modelRuntime: runtime, thinkingLevel, settingsManager, resourceLoader,
-      sessionManager: SessionManager.create(directory, directory),
+      sessionManager: resumeSession ? SessionManager.open(resumeSession, directory, directory)
+        : SessionManager.create(directory, directory),
       customTools: tools, noTools: 'all', tools: tools.map(tool => tool.name),
     }));
     // A wait and its successor must reach Mine AI in the order Pi emitted them.
@@ -197,13 +272,16 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
         record('assistant', { model, usage, stopReason, rawStopReason, errorMessage });
       }
     });
+    const monitoring = lab?.checks?.length ? monitorLab() : null;
     signal.addEventListener('abort', stop, { once: true });
     signal.throwIfAborted();
-    let prompt = promptText;
+    let prompt = resumeSession
+      ? instruction || 'Continue from the saved Minecraft conversation and the restored world state.'
+      : promptText;
     for (;;) {
       signal.throwIfAborted();
       lastReply = undefined;
-      await session.prompt(prompt);
+      await Promise.race([session.prompt(prompt), monitoring ?? new Promise(() => {})]);
       signal.throwIfAborted();
       const last = lastReply;
       if (last?.errorMessage) throw new Error(last.errorMessage);
@@ -215,6 +293,30 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
       }
       record('continuation', { attempt: ++continuationsWithoutAction });
       prompt = continuePlaying;
+    }
+
+    async function monitorLab(baseline, watchSignal = signal) {
+      baseline ??= await observeLab(watchSignal);
+      while (!watchSignal.aborted) {
+        await delay(3000, undefined, { signal: watchSignal, ref: false });
+        const { evidence, outcome } = await assessLab(baseline, watchSignal);
+        if (outcome.passed) {
+          await onLabOutcome?.({ ...outcome, evidence });
+          return;
+        }
+      }
+    }
+
+    async function observeLab(observationSignal = signal) {
+      return { ...await readLabEvidence(client, lab.checks, observationSignal),
+        ...await collectLabEvidence?.(lab.checks) };
+    }
+
+    async function assessLab(baseline, observationSignal = signal, previous) {
+      const evidence = await observeLab(observationSignal);
+      const outcome = evaluateLabChecks(lab.checks, evidence, baseline.status);
+      if (!previous || JSON.stringify(evidence) !== JSON.stringify(previous)) record('lab_observation', { evidence, outcome });
+      return { evidence, outcome };
     }
   } finally {
     signal.removeEventListener('abort', stop);

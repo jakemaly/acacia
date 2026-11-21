@@ -419,12 +419,14 @@ async function showRuns() {
   $('runs-list-view').hidden = false;
   $('run-detail-view').hidden = true;
   try {
-    const runs = await api('/api/runs');
+    const [runs, lab] = await Promise.all([api('/api/runs'), api('/api/lab')]);
     $('runs-status').textContent = runs.length ? '' : 'No saved runs';
+    populateLabCatalog(lab);
     $('runs-list').replaceChildren(...runs.map(saved => {
       const button = document.createElement('button');
       button.className = 'run-library-item';
-      button.innerHTML = `<span class="run-library-title"><span>Beat the Ender Dragon</span><span>${esc(title(saved.state))}</span></span>
+      const name = saved.lab?.fixtureName ?? (saved.lab?.type === 'checkpoint' ? 'Checkpoint replay' : 'Beat the Ender Dragon');
+      button.innerHTML = `<span class="run-library-title"><span>${esc(name)}</span><span>${esc(title(saved.state))}</span></span>
         <span class="run-library-meta">${esc(new Date(saved.date).toLocaleString())} · Seed ${esc(saved.seed)}${saved.reflection?.summary || saved.reflection?.cause ? ' · Death review' : ''}</span>`;
       button.onclick = () => showRun(saved);
       return button;
@@ -432,6 +434,65 @@ async function showRuns() {
   } catch (error) {
     $('runs-status').textContent = error.message;
   }
+}
+
+function populateLabCatalog(catalog) {
+  const fixture = $('lab-fixture');
+  fixture.replaceChildren(...catalog.fixtures.map(item => new Option(item.name, item.id)));
+  const checkpoint = $('lab-checkpoint');
+  checkpoint.replaceChildren(...catalog.checkpoints.map(item => new Option(
+    `${new Date(item.at).toLocaleString()} · ${item.context ? 'conversation saved' : 'world only'}`,
+    item.id,
+  )));
+  $('lab-build').replaceChildren(new Option('Current', 'current'), ...(catalog.candidateAvailable
+    ? [new Option('Candidate', 'candidate')] : []));
+  const unavailable = ['starting', 'running', 'saving', 'reflecting'].includes(run.state);
+  for (const id of ['lab-fixture', 'lab-checkpoint', 'lab-build', 'lab-instruction', 'lab-time-limit', 'lab-item',
+    'lab-item-count', 'lab-block-name', 'lab-block-x', 'lab-block-y', 'lab-block-z']) $(id).disabled = unavailable;
+  $('run-fixture').disabled = unavailable || !catalog.fixtures.length;
+  $('run-checkpoint').disabled = unavailable || !catalog.checkpoints.length;
+  if (!catalog.checkpoints.length) checkpoint.add(new Option('No saved checkpoints', ''));
+}
+
+async function startLab(input) {
+  $('lab-launch-status').textContent = 'Preparing isolated Minecraft run…';
+  $('run-fixture').disabled = true;
+  $('run-checkpoint').disabled = true;
+  try {
+    await api('/api/lab/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    $('lab-launch-status').textContent = '';
+    selected = null;
+    showTab('conversation');
+    await refresh();
+  } catch (error) {
+    $('lab-launch-status').textContent = error.message;
+    $('run-fixture').disabled = false;
+    $('run-checkpoint').disabled = false;
+  }
+}
+
+function checkpointChecks() {
+  const checks = [];
+  const item = $('lab-item').value.trim();
+  const itemCount = $('lab-item-count').value;
+  if (item || itemCount) {
+    if (!item || !itemCount) throw new Error('Enter both an item name and its minimum count.');
+    checks.push({ kind: 'inventoryAtLeast', item, count: Number(itemCount) });
+  }
+  const blockName = $('lab-block-name').value.trim();
+  const coordinates = ['x', 'y', 'z'].map(axis => $(`lab-block-${axis}`).value);
+  if (blockName || coordinates.some(Boolean)) {
+    if (!blockName || coordinates.some(value => value === '')) throw new Error('Enter a block name and all three coordinates.');
+    checks.push({ kind: 'blockAt', name: blockName, pos: { x: Number(coordinates[0]), y: Number(coordinates[1]), z: Number(coordinates[2]) } });
+  }
+  return checks;
+}
+
+function repeatLab(saved) {
+  if (saved.lab.type === 'fixture') return startLab({ fixtureId: saved.lab.fixtureId,
+    build: saved.lab.build, timeLimitMs: saved.lab.timeLimitMs });
+  return startLab({ checkpointId: saved.lab.checkpointId, build: saved.lab.build,
+    timeLimitMs: saved.lab.timeLimitMs, instruction: saved.lab.instruction, checks: saved.lab.checks });
 }
 
 async function showRun(saved) {
@@ -449,7 +510,20 @@ async function showRun(saved) {
     ${review.uncertainty ? `<p class="trace-text"><strong>Uncertainty</strong> ${esc(review.uncertainty)}</p>` : ''}
     ${review.reviewQuestion ? `<p class="trace-text"><strong>Question for review</strong> ${esc(review.reviewQuestion)}</p>` : ''}
     </section>` : '';
-  panel.innerHTML = `<h2 class="run-detail-heading">Beat the Ender Dragon</h2>
+  const labFacts = saved.lab ? `<section class="run-library-event" aria-label="Test result">
+      <h3>${esc(saved.lab.fixtureName ?? 'Checkpoint replay')}</h3>
+      <p class="run-library-meta">${saved.lab.type === 'fixture'
+        ? `Fixture ${esc(saved.lab.fixtureId)} · version ${esc(saved.lab.fixtureVersion)}`
+        : `Checkpoint ${esc(saved.lab.checkpointId)}`}</p>
+      <p class="run-library-meta">${esc(saved.lab.build ?? 'current')} build · fork ${esc(saved.runtime?.forkCommit ?? 'unknown')} · image ${esc(saved.runtime?.imageDigest ?? 'unknown')}</p>
+      ${saved.lab.type === 'checkpoint' ? `<p class="run-library-meta">${saved.lab.context
+        ? `Conversation saved ${Math.max(0, Math.round((saved.lab.contextAgeMs ?? 0) / 60_000))} minutes before the world save`
+        : 'World saved without a conversation'}</p>` : ''}
+      <p class="trace-text">Stopped: ${esc(saved.labStopReason ?? 'unknown')}</p>
+      ${saved.labOutcome ? `<pre class="trace-output lab-result-evidence">${esc(JSON.stringify(saved.labOutcome, null, 2))}</pre>` : ''}
+      <button id="repeat-lab" type="button">Repeat</button>
+    </section>` : '';
+  panel.innerHTML = `<h2 class="run-detail-heading">${esc(saved.lab?.fixtureName ?? (saved.lab ? 'Checkpoint replay' : 'Beat the Ender Dragon'))}</h2>
     <dl class="run-detail-facts"><dt>Status</dt><dd>${esc(title(saved.state))}</dd>
       <dt>Seed</dt><dd>${esc(saved.seed)}</dd><dt>Model</dt><dd>${esc(saved.model)}</dd>
       <dt>Reasoning</dt><dd>${esc(title(saved.thinkingLevel))}</dd></dl>
@@ -459,8 +533,9 @@ async function showRun(saved) {
       <video id="saved-recording" controls playsinline preload="metadata" hidden></video>
       <a id="download-recording" hidden>Download WebM</a>
     </section>
-    <p class="run-library-meta">${esc(saved.detail)}</p>${reviewMarkup}<button id="saved-more" class="load-more" hidden>Load older activity</button>
+    <p class="run-library-meta">${esc(saved.detail)}</p>${labFacts}${reviewMarkup}<button id="saved-more" class="load-more" hidden>Load older activity</button>
     <div id="saved-messages" class="run-detail-timeline"></div>`;
+  if (saved.lab) $('repeat-lab').onclick = () => repeatLab(saved);
   const recordingUrl = `/api/recording?id=${encodeURIComponent(saved.id)}`;
   try {
     const response = await fetch(recordingUrl, { method: 'HEAD' });
@@ -506,6 +581,16 @@ $('conversation-tab').onclick = () => showTab('conversation');
 $('runs-tab').onclick = () => showTab('runs');
 $('refresh-runs').onclick = showRuns;
 $('back-to-runs').onclick = showRuns;
+$('run-fixture').onclick = () => startLab({ fixtureId: $('lab-fixture').value, build: $('lab-build').value });
+$('run-checkpoint').onclick = () => {
+  try {
+    const timeLimitMs = Number($('lab-time-limit').value) * 60_000;
+    startLab({ checkpointId: $('lab-checkpoint').value, build: $('lab-build').value, timeLimitMs,
+      instruction: $('lab-instruction').value, checks: checkpointChecks() });
+  } catch (error) {
+    $('lab-launch-status').textContent = error.message;
+  }
+};
 $('trace-bottom').onclick = () => { timeline.scrollTop = timeline.scrollHeight; };
 timeline.addEventListener('scroll', () => { $('trace-bottom').hidden = atBottom(); });
 $('more').onclick = async () => {

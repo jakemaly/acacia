@@ -4,16 +4,18 @@ import { createServer as createSocket } from 'node:net';
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { dragonAdvancement, recoverRuns, startRun } from './run.mjs';
+import { dragonAdvancement, mineImage, recoverRuns, startRun } from './run.mjs';
 import { conversation, runId, savedRuns } from './history.mjs';
 import { recoverInterruptedRecordings, serveRecording } from './recordings.mjs';
 import { modelId, thinkingLevel } from './pi.mjs';
 import { recoverCheckpoints } from './checkpoints.mjs';
+import { labCheckpoints, labFixtures, resolveLabCheckpoint, validateLabChecks } from './labs.mjs';
 import { deathReview, readReflection, recordedDeath, reflectDeath, writeReflection } from './primitives.mjs';
 
-export async function dashboard({ host, port, root, agentDir, viewerPort, gamePort, allowed, jar, inference, hardcore = false, reflect = reflectDeath }) {
+export async function dashboard({ host, port, root, agentDir, viewerPort, gamePort, allowed, jar, inference,
+  candidateImage, hardcore = false, reflect = reflectDeath }) {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const config = { host, root: await realpath(root), agentDir, viewerPort, gamePort, allowed, jar, inference };
+  const config = { host, root: await realpath(root), agentDir, viewerPort, gamePort, allowed, jar, inference, candidateImage };
   const assets = new Map(await Promise.all([
     ['/', 'index.html', 'text/html; charset=utf-8'],
     ['/dashboard.mjs', 'dashboard.mjs', 'text/javascript; charset=utf-8'],
@@ -26,7 +28,8 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   const defaultMode = hardcore ? 'hardcore' : 'survival';
   const status = () => run ? {
     defaultMode,
-    id: run.id, seed: run.seed, state: run.state, detail: run.detail, hardcore: run.hardcore, profile: run.profile, parent: run.parent, death: run.death, activity: run.activity ?? [], player: run.player,
+    id: run.id, seed: run.seed, state: run.state, detail: run.detail, hardcore: run.hardcore, profile: run.profile, parent: run.parent, death: run.death,
+    lab: run.lab, labOutcome: run.labOutcome, labStopReason: run.labStopReason, activity: run.activity ?? [], player: run.player,
     model: modelId, thinkingLevel, collectionSession: run.collectionSession, checkpoints: run.checkpointStatus?.(),
     decision: run.state === 'running' ? run.decision : undefined,
     viewer: run.state === 'running' ? run.viewer : null,
@@ -34,12 +37,12 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   } : { defaultMode, state: 'idle', activity: [], model: modelId, thinkingLevel };
   const active = () => Boolean(review) || ['starting', 'running', 'saving'].includes(run?.state);
 
-  function begin({ hardcore, parent, collect = false }) {
-    if (!parent) collection = collect ? { id: randomUUID().replaceAll('-', '').slice(0, 12) } : undefined;
-    const started = startRun({ ...config, hardcore, parent, collection });
+  function begin({ hardcore, parent, collect = false, lab }) {
+    if (!parent && !lab) collection = collect ? { id: randomUUID().replaceAll('-', '').slice(0, 12) } : undefined;
+    const started = startRun({ ...config, hardcore, parent, collection: lab ? undefined : collection, lab });
     run = started;
     started.done.then(() => {
-      if (started.state === 'dead' && started.hardcore && !closing) schedule(started);
+      if (!started.lab && started.state === 'dead' && started.hardcore && !closing) schedule(started);
     }).catch(error => {
       started.state = 'incomplete';
       started.detail = error.message;
@@ -112,6 +115,12 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
           if (active()) return json(200, runs.map(saved => saved.id === run.id ? { ...saved, ...status() } : saved));
           return json(200, runs);
         }
+        if (url.pathname === '/api/lab') {
+          const [fixtures, checkpoints] = await Promise.all([labFixtures(), labCheckpoints(config.root)]);
+          return json(200, { fixtures: fixtures.map(({ id, name, description, version, timeLimitMs }) => ({ id, name, description, version, timeLimitMs })),
+            checkpoints: checkpoints.map(({ path: _path, ...checkpoint }) => checkpoint),
+            candidateAvailable: Boolean(config.candidateImage), defaultBuild: mineImage });
+        }
         if (url.pathname === '/api/recording') {
           return await serveRecording(config.root, url.searchParams.get('id'), request, response);
         }
@@ -139,6 +148,58 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         if (selectedHardcore && run?.hardcore && run.state === 'won') return json(409, { error: 'The Dragon has already been defeated.' });
         begin({ hardcore: selectedHardcore, collect: url.searchParams.get('collect') === '1' });
         return json(202, status());
+      }
+      if (url.pathname === '/api/lab/start') {
+        if (closing || active()) return json(409, { error: 'A run is already active.' });
+        let input;
+        try {
+          input = await readJsonBody(request);
+        } catch (error) {
+          return json(400, { error: error.message });
+        }
+        if (!input || typeof input !== 'object' || Array.isArray(input)) return json(400, { error: 'Choose a fixture or checkpoint.' });
+        const build = input.build ?? 'current';
+        if (build !== 'current' && build !== 'candidate') return json(400, { error: 'Choose the current or candidate build.' });
+        if (build === 'candidate' && !config.candidateImage) return json(400, { error: 'No candidate image is configured.' });
+        const image = build === 'candidate' ? config.candidateImage : mineImage;
+        const candidateImage = build === 'candidate';
+        const timeLimitMs = input.timeLimitMs ?? (input.fixtureId ? undefined : 5 * 60_000);
+        if (timeLimitMs !== undefined && (!Number.isSafeInteger(timeLimitMs) || timeLimitMs < 30_000 || timeLimitMs > 1_200_000)) {
+          return json(400, { error: 'Set a time limit between 30 seconds and 20 minutes.' });
+        }
+        if (input.fixtureId) {
+          const fixture = (await labFixtures()).find(item => item.id === input.fixtureId);
+          if (!fixture) return json(404, { error: 'Fixture unavailable.' });
+          const limit = timeLimitMs ?? fixture.timeLimitMs;
+          const summary = { type: 'fixture', fixtureId: fixture.id, fixtureName: fixture.name,
+            fixtureVersion: fixture.version, build, timeLimitMs: limit };
+          if (closing || active()) return json(409, { error: 'A run is already active.' });
+          begin({ lab: { type: 'fixture', fixture, summary, image, candidateImage, timeLimitMs: limit } });
+          return json(202, status());
+        }
+        if (input.checkpointId) {
+          const checkpoints = await labCheckpoints(config.root);
+          const checkpoint = resolveLabCheckpoint(config.root, input.checkpointId, checkpoints);
+          if (!checkpoint) return json(404, { error: 'Checkpoint unavailable.' });
+          const metadata = JSON.parse(await readFile(join(checkpoint.path, 'checkpoint.json'), 'utf8'));
+          const instruction = typeof input.instruction === 'string' ? input.instruction.trim() : '';
+          if (!metadata.context && !instruction) return json(400, { error: 'This checkpoint has no conversation. Enter a task to replay it.' });
+          if (instruction.length > 2000) return json(400, { error: 'Keep the replay instruction under 2,000 characters.' });
+          let checks;
+          try {
+            checks = validateLabChecks(input.checks ?? []);
+          } catch (error) {
+            return json(400, { error: error.message });
+          }
+          const limit = timeLimitMs ?? 5 * 60_000;
+          const summary = { type: 'checkpoint', checkpointId: checkpoint.id, sourceRun: checkpoint.run,
+            context: Boolean(metadata.context), contextAgeMs: metadata.contextAgeMs, instruction, checks, build, timeLimitMs: limit };
+          if (closing || active()) return json(409, { error: 'A run is already active.' });
+          begin({ lab: { type: 'checkpoint', checkpoint: { ...checkpoint, metadata }, summary,
+            image, candidateImage, timeLimitMs: limit, instruction, checks } });
+          return json(202, status());
+        }
+        return json(400, { error: 'Choose a fixture or checkpoint.' });
       }
       if (request.url === '/api/stop') {
         if (review) {
@@ -196,7 +257,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
     await recoverCheckpoints(config.root, run).catch(error => {
       console.error(`Could not recover checkpoints: ${error.message}`);
     });
-    const resumeReview = run?.hardcore && run.state === 'dead' &&
+    const resumeReview = !run?.lab && run?.hardcore && run.state === 'dead' &&
       !(await readReflection(join(config.root, run.id)))?.stopped;
     await new Promise((ready, reject) => server.once('error', reject).listen(port, host, ready));
     if (resumeReview) {
@@ -234,7 +295,23 @@ if (import.meta.main) {
     agentDir: resolve(process.env.PI_AGENT_DIR ?? join(homedir(), '.local/share/minecraft-agent/pi')),
     jar: process.env.MINECRAFT_SERVER_JAR,
     hardcore: process.env.MINECRAFT_HARDCORE === '1',
+    candidateImage: process.env.MINE_AI_CANDIDATE_IMAGE,
   });
   console.log(`Dashboard at http://${host}:${app.port}`);
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void app.close(); });
+}
+
+async function readJsonBody(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 64 * 1024) throw new Error('Lab request is too large.');
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new Error('Send valid JSON to start a lab run.');
+  }
 }

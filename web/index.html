@@ -123,6 +123,16 @@
     .run-library-event time { display:block; color:var(--muted); font-size:10px; }
     .run-detail-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .run-library-status { padding:6px 2px; color:var(--muted); font-size:11px; }
+    .lab-launcher { display:grid; gap:8px; margin:10px 0 14px; padding:10px; border:1px solid var(--line); background:var(--trace-bg); }
+    .lab-launcher h3 { margin:0; font-size:13px; font-weight:620; }
+    .lab-launcher label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
+    .lab-launcher select,.lab-launcher input,.lab-launcher textarea { width:100%; min-width:0; padding:6px 8px; border:1px solid var(--line); border-radius:3px; background:var(--bg); color:var(--text); font:12px system-ui,sans-serif; }
+    .lab-launcher textarea { min-height:54px; resize:vertical; }
+    .lab-launcher button { justify-self:start; padding:6px 10px; border:1px solid var(--line); background:var(--hover); color:var(--text); font:12px system-ui,sans-serif; }
+    .lab-check-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
+    .lab-check-grid label { min-width:0; }
+    .lab-launcher .lab-time { grid-template-columns:minmax(0,1fr) 92px; align-items:center; }
+    .lab-result-evidence { max-height:280px; overflow:auto; }
     .stage-column .playback-panel { display:flex; flex-direction:column; flex:0 0 auto; }
     .playback-meta { min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:5px 18px; padding:8px 2px 0; }
     .context-tabs { display:flex; align-items:center; gap:18px; flex:0 0 auto; }
@@ -234,6 +244,7 @@
       .steve { height:128px; }
       .agent-stage { height:136px; }
       .theme-toggle { margin-top:16px; }
+      .lab-check-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; } }
   </style>
@@ -326,7 +337,30 @@
         </section>
         <section class="runs-panel" id="runs-panel" role="tabpanel" aria-labelledby="runs-tab" aria-label="Saved Minecraft runs" hidden>
           <div class="runs-view" id="runs-list-view">
-            <div class="run-detail-actions"><div class="workspace-heading">Saved runs</div><button id="refresh-runs" type="button">Refresh</button></div>
+            <div class="run-detail-actions"><div class="workspace-heading">Acacia Runs</div><button id="refresh-runs" type="button">Refresh</button></div>
+            <section class="lab-launcher" aria-label="Test lab">
+              <h3>Run a fixture</h3>
+              <label>Fixture<select id="lab-fixture"></select></label>
+              <label>Tool build<select id="lab-build"><option value="current">Current</option></select></label>
+              <button id="run-fixture" type="button">Run fixture</button>
+              <h3>Replay a checkpoint</h3>
+              <label>Checkpoint<select id="lab-checkpoint"></select></label>
+              <label>Task for a world-only save<textarea id="lab-instruction" placeholder="Resume the saved conversation by default"></textarea></label>
+              <label class="lab-time">Time limit in minutes<input id="lab-time-limit" type="number" min="0.5" max="20" step="0.5" value="5"></label>
+              <details><summary>Optional success checks</summary>
+                <p class="run-library-meta">Without checks, a checkpoint replay ends only on death, time limit, or Stop; no task-success verdict is issued.</p>
+                <div class="lab-check-grid">
+                  <label>Item name<input id="lab-item" placeholder="blaze_rod"></label>
+                  <label>Minimum count<input id="lab-item-count" type="number" min="0" placeholder="20"></label>
+                  <label>Block name<input id="lab-block-name" placeholder="air"></label>
+                  <label>Block X<input id="lab-block-x" type="number" placeholder="117"></label>
+                  <label>Block Y<input id="lab-block-y" type="number" placeholder="75"></label>
+                  <label>Block Z<input id="lab-block-z" type="number" placeholder="681"></label>
+                </div>
+              </details>
+              <button id="run-checkpoint" type="button">Run from checkpoint</button>
+              <p id="lab-launch-status" class="run-library-meta" aria-live="polite"></p>
+            </section>
             <div class="run-library-status" id="runs-status">Loading saved runs…</div>
             <div class="run-list" id="runs-list" aria-live="polite"></div>
           </div>

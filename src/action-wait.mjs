@@ -7,7 +7,8 @@ function handoff(result, actionId, reason) {
     structuredContent: { ...result.structuredContent, handoff: { actionId, reason } } };
 }
 
-export async function followAction({ name, args, executionLimit, pollMs = 5000, call, onProgress, isTransportFailure = () => false }) {
+export async function followAction({ name, args, executionLimit, pollMs = 5000, call, onAccepted, onProgress,
+  isTransportFailure = () => false }) {
   const { wait_timeout_ms: _wait, execution_timeout_ms: _deadline, response_format: _format, ...submission } = args;
   const nativeLimit = Number.isFinite(executionLimit) ? Math.min(executionLimit, maxObjectiveMs) : undefined;
   let result = await call(name, {
@@ -15,6 +16,7 @@ export async function followAction({ name, args, executionLimit, pollMs = 5000, 
   });
   let data = result.structuredContent?.response?.data;
   if (data?.state !== 'accepted') return result;
+  await onAccepted?.(data);
 
   const { actionId } = data;
   const wait = (timeout_ms, response_format = 'json') => call('wait_for_action', {
