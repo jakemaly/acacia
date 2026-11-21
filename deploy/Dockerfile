@@ -4,11 +4,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /opt/mine-ai
 COPY deploy/mine-ai-source/package.json deploy/mine-ai-source/bun.lock /opt/mine-ai/
 RUN bun install --frozen-lockfile --production
-COPY deploy/mine-ai-source/ /opt/mine-ai/
-COPY deploy/mine-ai-source.commit /tmp/mine-ai-source.commit
 COPY deploy/viewer-package*.json /opt/viewer/
 RUN cd /opt/viewer && cp viewer-package.json package.json && cp viewer-package-lock.json package-lock.json && bun install --frozen-lockfile --production && sed -i "s/require('canvas')/require('@napi-rs\/canvas')/g" node_modules/prismarine-viewer/viewer/lib/entities.js \
     && sed -i '/chunkColumnLoad: function (pos)/i\      chunkColumnUnload: function (pos) { worldView.unloadChunk(pos) },' node_modules/prismarine-viewer/viewer/lib/worldView.js
+COPY deploy/mine-ai-source/ /opt/mine-ai/
+COPY deploy/mine-ai-source.commit /tmp/mine-ai-source.commit
 COPY deploy/viewer.mjs /opt/viewer/viewer.mjs
 COPY deploy/recording.mjs /opt/viewer/recording.mjs
 COPY deploy/browser-recording.mjs /opt/viewer/browser-recording.mjs
