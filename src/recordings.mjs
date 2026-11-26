@@ -162,7 +162,7 @@ export async function serveRecording(root, id, request, response) {
   stream.pipe(response);
 }
 
-function parseRange(value, size) {
+export function parseRange(value, size) {
   if (!value) return undefined;
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
   if (!match || (!match[1] && !match[2])) return null;

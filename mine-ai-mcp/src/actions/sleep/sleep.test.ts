@@ -235,15 +235,8 @@ test("sleeps through the night and wakes up in the morning", async () => {
   assert.equal(result.sleep?.timeOfDay, 0);
   assert.equal(result.sleep?.respawnSet, true);
   assert.equal(result.sleep?.observation, sleepOutcomes.sleptMorning);
-  assert.deepEqual(result.sleep?.otherPlayers, [
-    { username: "Alice", sleepState: "sleeping" },
-    { username: "Bob", sleepState: "awake" },
-    { username: "Carol", sleepState: "unknown" },
-  ]);
-  const markdown = formatSleepResult(result);
-  assert.match(markdown, /Alice: sleeping/);
-  assert.match(markdown, /Bob: awake/);
-  assert.match(markdown, /Carol: sleep state unknown/);
+  assert.equal("otherPlayers" in (result.sleep ?? {}), false);
+  assert.doesNotMatch(formatSleepResult(result), /Alice|Bob|Carol/);
 });
 
 test("keeps waiting for morning if the bot leaves bed early", async () => {

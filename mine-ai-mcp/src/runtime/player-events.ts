@@ -2,7 +2,6 @@ import type { Bot, BotEvents } from "mineflayer";
 import { recordEvent, type SqlBotData } from "../bot-data/index.js";
 import { deathMessage } from "../world/death-message.js";
 
-type PlayerMessageListener = BotEvents["chat"];
 type DeathListener = BotEvents["death"];
 type CancelForegroundAction = (reason: string) => unknown;
 
@@ -12,26 +11,6 @@ export function observePlayerEvents(
   data: SqlBotData,
   cancelForegroundAction: CancelForegroundAction,
 ): () => void {
-  const observeMessage =
-    (channel: "chat" | "whisper"): PlayerMessageListener =>
-    (username, message) => {
-      const direction = username.toLowerCase() === bot.username.toLowerCase() ? "outgoing" : "incoming";
-      recordEvent(data, bot.username, {
-        type: "player_message",
-        observedAt: new Date().toISOString(),
-        summary: `${username}: ${message}`,
-        payload: {
-          username,
-          channel,
-          direction,
-          message,
-          addressed: direction === "incoming" && addressesUsername(message, bot.username),
-        },
-      });
-    };
-
-  const onChat = observeMessage("chat");
-  const onWhisper = observeMessage("whisper");
   let lastDeathMessage: string | null = null;
   const onCombatDeath = (packet: { playerId?: number; message?: unknown }) => {
     if (packet.playerId !== undefined && packet.playerId !== bot.entity?.id) return;
@@ -49,7 +28,9 @@ export function observePlayerEvents(
     lastDeathMessage = null;
     const summary = `${bot.username} died at ${position.x}, ${position.y}, ${position.z} in ${dimension}${cause ? `: ${cause}` : ""}.`;
 
-    cancelForegroundAction(`${bot.username} died${cause ? `: ${cause}` : ""}.`);
+    // The server's death line can name another player; keep it in operator
+    // evidence without placing it in the agent's cancellation response.
+    cancelForegroundAction(`${bot.username} died.`);
     recordEvent(data, bot.username, {
       type: "player_death",
       observedAt,
@@ -84,8 +65,6 @@ export function observePlayerEvents(
     });
   };
 
-  bot.on("chat", onChat);
-  bot.on("whisper", onWhisper);
   bot.on("death", onDeath);
   bot.on("respawn", onRespawn);
   bot.on("forcedMove", onForcedMove);
@@ -96,12 +75,5 @@ export function observePlayerEvents(
     bot.off("respawn", onRespawn);
     bot.off("forcedMove", onForcedMove);
     bot.off("death", onDeath);
-    bot.off("whisper", onWhisper);
-    bot.off("chat", onChat);
   };
-}
-
-function addressesUsername(message: string, username: string): boolean {
-  const words = message.toLowerCase().split(/[^a-z0-9_]+/u);
-  return words.includes(username.toLowerCase());
 }

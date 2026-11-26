@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Vec3 } from "vec3";
+import { z } from "zod";
 import { botFixture, EQUIPMENT_SLOTS, type FakeStack } from "../../test-support/bot.js";
 import { createDiscardedItems, type DiscardedItems } from "../../world/watchers/discarded-items.js";
-import { parseDropItemRequest } from "./contract.js";
+import { dropItemInputSchema, parseDropItemRequest } from "./contract.js";
 import { formatDropItemResult, dropItem, type DropItemDependencies } from "./drop-item.js";
 
 interface DropBotOptions {
@@ -14,7 +15,6 @@ interface DropBotOptions {
   readonly rejects?: string;
   /** Toss this item name silently succeeds without the inventory changing. */
   readonly swallows?: string;
-  readonly players?: Record<string, { id: number; position: { x: number; y: number; z: number } }>;
   readonly position?: { x: number; y: number; z: number };
   /** Item entities already on the ground before the action runs. */
   readonly existingItems?: readonly { id: number; name: string; distance?: number }[];
@@ -24,7 +24,6 @@ interface DropBotOptions {
 
 function dropBot(options: DropBotOptions) {
   const items = options.carried.map((stack) => ({ ...stack }));
-  const lookedAt: { x: number; y: number; z: number }[] = [];
   const slots: Record<number, { name: string } | null> = {};
   for (const [slot, name] of Object.entries(options.worn ?? {})) {
     if (name) slots[EQUIPMENT_SLOTS[slot]!] = { name };
@@ -62,18 +61,9 @@ function dropBot(options: DropBotOptions) {
       slots,
       entities,
       position: options.position,
-      players: Object.fromEntries(
-        Object.entries(options.players ?? {}).map(([name, player]) => [
-          name,
-          { entity: { id: player.id, position: new Vec3(player.position.x, player.position.y, player.position.z) } },
-        ]),
-      ),
     },
     {
       heldItem: options.held ? { name: options.held } : null,
-      lookAt: async (position: { x: number; y: number; z: number }) => {
-        lookedAt.push({ x: position.x, y: position.y, z: position.z });
-      },
       tossStack: async (stack: FakeStack) => {
         if (stack.name === options.rejects) throw new Error("server refused");
         if (stack.name === options.swallows) return;
@@ -90,7 +80,7 @@ function dropBot(options: DropBotOptions) {
       },
     },
   );
-  return { bot, items, lookedAt, entities };
+  return { bot, items, entities };
 }
 
 function deps(overrides: Partial<DropItemDependencies> = {}): DropItemDependencies {
@@ -102,6 +92,14 @@ function deps(overrides: Partial<DropItemDependencies> = {}): DropItemDependenci
     ...overrides,
   };
 }
+
+test("the drop tool exposes no player recipient and admits hole disposal", () => {
+  const schema = z.toJSONSchema(dropItemInputSchema) as { properties: Record<string, unknown> };
+  assert.equal(Object.hasOwn(schema.properties, "to_player"), false);
+  assert.deepEqual(parseDropItemRequest({ items: [{ item_name: "gravel", count: 73 }], in_a_hole: true }).destination,
+    { kind: "hole" });
+  assert.throws(() => parseDropItemRequest({ items: [{ item_name: "gravel" }], to_player: "Acacia" }));
+});
 
 test("drops every stack of an item and reports the inventory delta", async () => {
   const { bot, items } = dropBot({
@@ -239,69 +237,6 @@ test("a toss the server swallows or rejects is reported, not assumed", async () 
   );
   assert.equal(rejected.status, "failed");
   assert.match(rejected.drop.dropped[0]?.error ?? "", /\[DROP_REJECTED\].*server refused/);
-});
-
-test("walks to the named player, faces them, and records the handover", async () => {
-  const { bot, lookedAt } = dropBot({
-    carried: [{ name: "bread", count: 8, type: 1 }],
-    players: { Dev: { id: 42, position: { x: 1, y: 64, z: 1 } } },
-    position: { x: 0, y: 64, z: 0 },
-  });
-  let goalRange: number | null = null;
-
-  const result = await dropItem(
-    bot,
-    parseDropItemRequest({ items: [{ item_name: "bread" }], to_player: "Dev" }),
-    {},
-    deps({
-      navigate: (async (options: { goal: unknown }) => {
-        goalRange = (options.goal as { range?: number }).range ?? null;
-        return { status: "completed", elapsedMs: 5 };
-      }) as never,
-    }),
-    createDiscardedItems(),
-  );
-
-  assert.equal(result.status, "succeeded");
-  assert.equal(result.drop.recipient?.name, "Dev");
-  assert.equal(result.drop.dropped[0]?.dropped, 8);
-  assert.deepEqual(lookedAt, [{ x: 1, y: 64, z: 1 }], "faced the player before tossing");
-  assert.equal(goalRange, null, "the entity goal carries its own range");
-});
-
-test("refuses to hand items to a player who is not loaded, dropping nothing", async () => {
-  const { bot, items } = dropBot({ carried: [{ name: "bread", count: 8, type: 1 }] });
-
-  const result = await dropItem(
-    bot,
-    parseDropItemRequest({ items: [{ item_name: "bread" }], to_player: "Ghost" }),
-    {},
-    deps(),
-    createDiscardedItems(),
-  );
-
-  assert.equal(result.status, "failed");
-  assert.match(result.error ?? "", /\[DROP_PLAYER_NOT_FOUND\] No player named Ghost/);
-  assert.deepEqual(result.drop.dropped, []);
-  assert.equal(items.length, 1, "nothing was tossed");
-});
-
-test("reports a player the route could not reach", async () => {
-  const { bot } = dropBot({
-    carried: [{ name: "bread", count: 8, type: 1 }],
-    players: { Dev: { id: 42, position: { x: 40, y: 64, z: 40 } } },
-  });
-
-  const result = await dropItem(
-    bot,
-    parseDropItemRequest({ items: [{ item_name: "bread" }], to_player: "Dev" }),
-    {},
-    deps({ navigate: (async () => ({ status: "stopped", elapsedMs: 900, reason: "no route" })) as never }),
-    createDiscardedItems(),
-  );
-
-  assert.equal(result.status, "failed");
-  assert.match(result.error ?? "", /\[DROP_PLAYER_UNREACHABLE\] Pathfinder could not reach Dev/);
 });
 
 test("registers only what it actually tossed, so a later sweep leaves that alone and nothing else", async () => {

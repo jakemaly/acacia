@@ -11,7 +11,7 @@ export const VIEW_STATUS_DESCRIPTION =
   "and compass heading; every carried stack with its slot, the free slot count, the held item, and worn equipment; " +
   "remaining item durability, best carried tool and armour tiers, bucket kinds, observed air supply in ticks, burning and lava contact, and current physical ownership/action; " +
   "which movements the inventory unlocks: no carried water bucket caps every route at a three-block fall and disarms the emergency fall save, and pillaring and bridging need a carried scaffold block; " +
-  "the players and hostile mobs nearby; every loaded dropped item, nearest first; and every loaded mob species and observed age group with its count and the " +
+  "the hostile mobs nearby; every loaded dropped item, nearest first; and every loaded mob species and observed age group with its count and the " +
   "nearest one's position, at any distance, so a cow sixty blocks off is listed. " +
   "The End fight section lists loaded crystal IDs and observed cage status, dragon phase name and health, the estimated perched head or tentative landing head position, and dragon breath clouds. " +
   "Use it to check state before and after actions, to wait for night, to pick a species to hunt, " +

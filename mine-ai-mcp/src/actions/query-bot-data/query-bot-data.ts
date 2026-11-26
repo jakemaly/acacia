@@ -22,6 +22,13 @@ const ALLOWED_QUERY_ACTIONS = new Set<number>([
   constants.SQLITE_RECURSIVE,
 ]);
 
+// Historical event and action records can contain chat, player lists, and
+// previously returned tool text. Keep those records for operators, but do not
+// make the raw tables available to model-authored SQL.
+const PRIVATE_HISTORY_TABLES = new Set([
+  "events", "action_requests", "action_responses", "action_executions", "action_incidents", "notes",
+]);
+
 /** Execute one model-authored read on the bot's existing SQLite connection. */
 export async function queryBotData(
   botData: SqlBotData,
@@ -31,11 +38,21 @@ export async function queryBotData(
   signal?.throwIfAborted();
 
   return botData.withReadOnlyDatabase((database) => {
-    database.setAuthorizer((action) =>
-      ALLOWED_QUERY_ACTIONS.has(action) ? constants.SQLITE_OK : constants.SQLITE_DENY,
-    );
+    let privateRead = false;
+    database.setAuthorizer((action, table, column) => {
+      if (action === constants.SQLITE_READ && table?.toLowerCase() === "bot_last_death" && column?.toLowerCase() === "cause")
+        return constants.SQLITE_IGNORE;
+      if (action === constants.SQLITE_READ && table && PRIVATE_HISTORY_TABLES.has(table.toLowerCase())) {
+        privateRead = true;
+        return constants.SQLITE_DENY;
+      }
+      return ALLOWED_QUERY_ACTIONS.has(action) ? constants.SQLITE_OK : constants.SQLITE_DENY;
+    });
     try {
       return executeRead(database, request.sql);
+    } catch (error) {
+      if (privateRead) throw new Error("SQL query rejected: private history is not available to the agent.");
+      throw error;
     } finally {
       database.setAuthorizer(null);
     }

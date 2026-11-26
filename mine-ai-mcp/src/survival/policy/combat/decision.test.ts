@@ -164,6 +164,23 @@ const skeletonScene = (): CombatDecisionFacts => ({
   ],
 });
 
+test("an unshielded incidental archer prompts withdrawal while close defence and hunts remain available", () => {
+  const facts = {
+    ...skeletonScene(),
+    shield: false,
+    policy: { ...DEFAULT_COMBAT_POLICY, engagement: "respond_to_threats" as const },
+  };
+  assert.equal(decideCombatResponse(facts, { kind: "automatic" }).kind, "evade");
+  assert.equal(decideCombatResponse(facts, { kind: "automatic", quarry: ["skeleton"] }).kind, "fight");
+  assert.equal(decideCombatResponse(facts, { kind: "pursuit", targetId: 24617, minimumHealth: 12 }).kind, "fight");
+  assert.equal(decideCombatResponse({ ...facts, shield: true }, { kind: "automatic" }).kind, "fight");
+  assert.equal(decideCombatResponse({ ...facts, rangedWeapon: true }, { kind: "automatic" }).kind, "fight");
+  assert.equal(decideCombatResponse({ ...facts, answered: new Set(["evade"]) }, { kind: "automatic" }).kind, "fight");
+  assert.equal(decideCombatResponse({ ...facts, policy: { ...facts.policy, retreat: false } }, { kind: "automatic" }).kind, "fight");
+  const close = { ...facts.contacts[0]!, inReach: true };
+  assert.equal(decideCombatResponse({ ...facts, contacts: [close] }, { kind: "automatic" }).kind, "fight");
+});
+
 test("a hunted species in contact is fought, not withdrawn from, until health rules say otherwise", () => {
   const facts = skeletonScene();
   assert.equal(decideCombatResponse(facts, { kind: "automatic" }).kind, "evade");

@@ -4,6 +4,7 @@ import { createServer as createSocket } from 'node:net';
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { dragonAdvancement, mineImage, recoverRuns, startRun } from './run.mjs';
 import { conversation, runId, savedRuns } from './history.mjs';
 import { recoverInterruptedRecordings, serveRecording } from './recordings.mjs';
@@ -11,9 +12,11 @@ import { modelId, thinkingLevel } from './pi.mjs';
 import { recoverCheckpoints } from './checkpoints.mjs';
 import { labCheckpoints, labFixtures, resolveLabCheckpoint, validateLabChecks } from './labs.mjs';
 import { deathReview, readReflection, recordedDeath, reflectDeath, writeReflection } from './primitives.mjs';
+import { createModalBatchService } from './modal-batch-service.mjs';
+import { modalArtifactStream, serveModalRecording, streamModalArtifact } from './modal-artifacts.mjs';
 
 export async function dashboard({ host, port, root, agentDir, viewerPort, gamePort, allowed, jar, inference,
-  candidateImage, hardcore = false, reflect = reflectDeath }) {
+  candidateImage, hardcore = false, reflect = reflectDeath, modalService: suppliedModalService }) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const config = { host, root: await realpath(root), agentDir, viewerPort, gamePort, allowed, jar, inference, candidateImage };
   const assets = new Map(await Promise.all([
@@ -25,6 +28,17 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   let collection;
   let review;
   let closing = false;
+  let modalService = suppliedModalService, modalPromise;
+  const repo = fileURLToPath(new URL('..', import.meta.url));
+  async function getModalService() {
+    if (modalService) return modalService;
+    modalPromise ??= createModalBatchService({ root: config.root, repo, agentDir: config.agentDir });
+    try { modalService = await modalPromise; return modalService; } catch (error) { modalPromise = undefined; throw error; }
+  }
+  const modalStatus = item => ({ defaultMode: 'hardcore', id: item.id, seed: item.seed, state: item.state,
+    detail: item.detail, hardcore: item.hardcore, parent: item.parent, death: item.death, activity: item.activity ?? [],
+    player: item.player, decision: item.decision, model: modelId, thinkingLevel,
+    viewer: item.state === 'running' ? item.viewer : null, spectator: null });
   const defaultMode = hardcore ? 'hardcore' : 'survival';
   const status = () => run ? {
     defaultMode,
@@ -97,6 +111,13 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         (hostHeader !== new URL(origin).host && !forwardedHost)) {
       return json(403, { error: 'Dashboard access is restricted.' });
     }
+    const viewer = new URL(request.url, origin).pathname.match(/^\/api\/modal\/viewer\/([a-f0-9]{12})\//);
+    if (viewer) {
+      if (!['GET', 'HEAD', 'POST'].includes(request.method)) return json(405, { error: 'Method unavailable.' });
+      const selected = modalService?.getRun(viewer[1]);
+      if (!selected) return json(404, { error: 'Viewer unavailable.' });
+      return selected.proxyViewer(request, response);
+    }
     if (request.method === 'GET' || request.method === 'HEAD') {
       const asset = assets.get(request.url);
       if (asset) {
@@ -107,13 +128,22 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         return response.end(asset.body);
       }
       if (request.url === '/favicon.ico') return response.writeHead(204).end();
-      if (request.url === '/api/run') return json(200, status());
+      if (request.url === '/api/run' || request.url.startsWith('/api/run?')) {
+        const id = new URL(request.url, origin).searchParams.get('modal');
+        if (!id) return json(200, status());
+        const selected = modalService?.getRun(id);
+        return selected ? json(200, modalStatus(selected)) : json(404, { error: 'Run unavailable.' });
+      }
+      if (request.url === '/api/modal') return json(200, modalService?.status() ?? { state: 'idle', slots: [], desiredCount: 0 });
       try {
         const url = new URL(request.url, origin);
         if (url.pathname === '/api/runs') {
           const runs = await savedRuns(config.root);
-          if (active()) return json(200, runs.map(saved => saved.id === run.id ? { ...saved, ...status() } : saved));
-          return json(200, runs);
+          return json(200, runs.map(saved => {
+            if (active() && saved.id === run.id) return { ...saved, ...status() };
+            const remote = modalService?.getRun(saved.id);
+            return remote ? { ...saved, ...modalStatus(remote) } : saved;
+          }));
         }
         if (url.pathname === '/api/lab') {
           const [fixtures, checkpoints] = await Promise.all([labFixtures(), labCheckpoints(config.root)]);
@@ -123,8 +153,38 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
             checkpoints: checkpoints.map(({ path: _path, ...checkpoint }) => checkpoint),
             candidateAvailable: Boolean(config.candidateImage), defaultBuild: mineImage });
         }
+        if (url.pathname === '/api/modal/artifacts' || url.pathname === '/api/modal/artifact') {
+          const id = url.searchParams.get('id');
+          if (!runId.test(id ?? '')) return json(400, { error: 'Invalid run ID.' });
+          const manifest = await readFile(join(config.root, id, 'run.json'), 'utf8').then(JSON.parse);
+          if (!manifest.modal?.runKey) return json(404, { error: 'Remote artifacts unavailable.' });
+          const service = await getModalService();
+          const identity = { runKey: manifest.modal.runKey, runId: id };
+          if (url.pathname === '/api/modal/artifacts') return json(200, await service.control({ command: 'artifact-list', ...identity }));
+          if (request.method === 'HEAD') return json(405, { error: 'Use GET to download artifacts.' });
+          const kind = url.searchParams.get('kind');
+          if (kind === 'world' && ['starting', 'running', 'saving'].includes(service.getRun(id)?.state)) {
+            return json(409, { error: 'Stop the run before downloading its world.' });
+          }
+          const python = await service.getPython();
+          return streamModalArtifact(identity, kind, response,
+            { stream: args => modalArtifactStream(args, { python, script: join(repo, 'deploy/modal_control.py') }) });
+        }
         if (url.pathname === '/api/recording') {
-          return await serveRecording(config.root, url.searchParams.get('id'), request, response);
+          const id = url.searchParams.get('id');
+          if (!runId.test(id ?? '')) return json(400, { error: 'Invalid run ID.' });
+          const manifest = await readFile(join(config.root, id, 'run.json'), 'utf8').then(JSON.parse, error => {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+          });
+          if (manifest?.modal?.runKey) {
+            const service = await getModalService();
+            const python = await service.getPython();
+            return await serveModalRecording({ runId: id, runKey: manifest.modal.runKey,
+              ...(url.searchParams.has('segment') && { segment: url.searchParams.get('segment') }) }, request, response,
+            { stat: service.control, stream: args => modalArtifactStream(args, { python, script: join(repo, 'deploy/modal_control.py') }) });
+          }
+          return await serveRecording(config.root, id, request, response);
         }
         if (url.pathname === '/api/conversation') {
           const id = url.searchParams.get('id');
@@ -142,6 +202,23 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
     }
     if (request.method === 'POST' && (request.headers.origin === origin || forwardedOrigin)) {
       const url = new URL(request.url, origin);
+      if (['/api/modal/start', '/api/modal/stop', '/api/modal/resume', '/api/modal/resize'].includes(url.pathname)) {
+        try {
+          const service = await getModalService();
+          if (url.pathname === '/api/modal/start') {
+            const input = await readJsonBody(request);
+            if (!Number.isSafeInteger(input.count) || input.count < 1 || input.count > 64 || !['hardcore', 'survival'].includes(input.mode)) {
+              return json(400, { error: 'Choose a mode and between 1 and 64 worlds.' });
+            }
+            await service.start({ count: input.count, hardcore: input.mode === 'hardcore' });
+          } else if (url.pathname === '/api/modal/resize') {
+            const input = await readJsonBody(request);
+            await service.resize(input.count);
+          } else if (url.pathname === '/api/modal/stop') await service.stop();
+          else await service.resume();
+          return json(202, service.status());
+        } catch (error) { return json(409, { error: error.message }); }
+      }
       if (url.pathname === '/api/start') {
         if (closing || active()) return json(409, { error: 'A run is already active.' });
         const mode = url.searchParams.get('mode') ?? defaultMode;
@@ -230,6 +307,17 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
     }
     return json(404, { error: 'Route unavailable.' });
   });
+  server.on('upgrade', (request, socket, head) => {
+    const origin = `http://${host}:${server.address().port}`;
+    const allowedHost = [new URL(origin).host, `localhost:${server.address().port}`, `127.0.0.1:${server.address().port}`, `[::1]:${server.address().port}`];
+    const allowedOrigin = allowedHost.map(value => `http://${value}`);
+    const match = new URL(request.url, origin).pathname.match(/^\/api\/modal\/viewer\/([a-f0-9]{12})\//);
+    if (!match || !allowed.has(request.socket.remoteAddress) || !allowedHost.includes(request.headers.host) ||
+        (request.headers.origin && !allowedOrigin.includes(request.headers.origin))) return socket.destroy();
+    const selected = modalService?.getRun(match[1]);
+    if (!selected) return socket.destroy();
+    selected.proxyViewerUpgrade(request, socket, head);
+  });
   // An abstract socket releases ownership even when the host process is killed.
   const lock = createSocket(client => client.destroy());
   const lockPath = `\0mine-ai-${createHash('sha256').update(config.root).digest('hex')}`;
@@ -237,7 +325,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
   try {
     await recoverRuns(config.root);
     await recoverInterruptedRecordings(config.root);
-    [run] = await savedRuns(config.root);
+    run = (await savedRuns(config.root)).find(saved => !saved.modal);
     if (run?.hardcore && run.state !== 'won') {
       const directory = join(config.root, run.id);
       // Recover a win written by vanilla before the launcher saved its result.
@@ -265,6 +353,13 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
     const resumeReview = !run?.lab && run?.hardcore && run.state === 'dead' &&
       !(await readReflection(join(config.root, run.id)))?.stopped;
     await new Promise((ready, reject) => server.once('error', reject).listen(port, host, ready));
+    if (!modalService && await readFile(join(config.root, 'modal-batch.json'), 'utf8').then(() => true, error => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    })) {
+      const service = await getModalService();
+      void service.recover().catch(error => console.error(`Could not resume Modal batch: ${error.message}`));
+    }
     if (resumeReview) {
       if (run.collectionSession) collection = { id: run.collectionSession, runtime: run.runtime };
       schedule(run);
@@ -282,6 +377,7 @@ export async function dashboard({ host, port, root, agentDir, viewerPort, gamePo
         review.controller.abort(new Error('Harness service shut down.'));
         await (review.stop ?? review.done);
       } else if (active()) await run.stop(new Error('Harness service shut down.')).catch(() => {});
+      await modalService?.close();
       await closed;
       await new Promise(ready => lock.close(ready));
     },

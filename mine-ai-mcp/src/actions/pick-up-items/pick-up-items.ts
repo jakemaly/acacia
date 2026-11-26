@@ -165,7 +165,7 @@ function evidence(bot: Bot, request: PickUpItemsRequest, before: Record<string, 
       dimension: state.recovery.dimension,
       position: state.recovery.position,
       observedAt: state.recovery.observedAt,
-      cause: state.recovery.cause,
+      cause: null,
       wallAgeMs: Math.max(0, Date.now() - Date.parse(state.recovery.observedAt))
     } :
                                null

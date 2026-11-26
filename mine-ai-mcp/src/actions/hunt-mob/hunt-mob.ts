@@ -878,7 +878,7 @@ export function formatHuntMobResult(result: HuntMobResult): string {
               (drop) =>
                 `#${drop.id} ${drop.item} ×${drop.observedCount} at ${coordinate(drop.position)}` +
                 ` (in ${drop.blocks.atPosition ?? "unknown"}, above ${drop.blocks.belowPosition ?? "unknown"}` +
-                `${drop.collectedByOther ? "; other collector observed" : ""}; last seen ${drop.observedAt})`,
+                `; last seen ${drop.observedAt})`,
             )
             .join("; ")
     }`,

@@ -163,8 +163,9 @@ compass heading to the nearest uncommitted chunk. Defined in
 
 ### `query_bot_data`
 
-Use `query_bot_data` to inspect detailed world observations, historical
-records, container contents, or Minecraft registry facts using SQL. The only
+Use `query_bot_data` to inspect detailed world observations, container contents,
+or Minecraft registry facts using SQL. Raw event, action-history, and note
+tables are unavailable to protect player privacy. The only
 argument is `sql`, which requires exactly one read-only SQLite `SELECT` or
 `WITH` statement. Success proves the query executed within safety bounds and
 returned matching rows without altering the database. Defined in
@@ -172,8 +173,8 @@ returned matching rows without altering the database. Defined in
 
 ### `read_recent_events`
 
-Use `read_recent_events` to inspect durable game events such as chat
-messages, player deaths, and hostile encounters. The primary argument is `limit`
+Use `read_recent_events` to inspect filtered game events such as the bot's
+death and hostile encounters. Chat and player identities are omitted. The primary argument is `limit`
 (1 to 100, default 20). Success proves the server returned an oldest-first page
 of unread events and atomically advanced the bot's read cursor to the highest
 returned event ID. It remains available during foreground execution; its event
@@ -735,8 +736,8 @@ Defined in [src/actions/eat-food/contract.ts](../../src/actions/eat-food/contrac
 
 ### `drop_item`
 
-Drop named carried items, optionally walking to a named player before tossing
-them. Each entry accepts `item_name` and an optional `count`; omitting the count
+Drop named carried items on the ground or into a disposal hole. Each entry
+accepts `item_name` and an optional `count`; omitting the count
 drops all carried stacks of that item. Worn armor and the off-hand are excluded,
 and the held item requires `allow_equipped`. Results report the observed inventory
 decrease. Collection and hunting ignore the resulting item entities as targets.
@@ -744,8 +745,7 @@ Set `in_a_hole: true` to create a dry, enclosed disposal pit below pickup height
 beside the bot. Underground, this can excavate an opening into a tunnel wall
 before digging the pit. Existing suitable pits can be reused. The bot stays on
 its supporting ground; liquid boundaries, falling blocks, and unbreakable terrain
-can prevent preparation. This cannot be combined
-with `to_player`. Hole disposal additionally verifies that the tossed items
+can prevent preparation. Hole disposal additionally verifies that the tossed items
 landed at the bottom; the result includes the hole's bottom coordinates. The
 bot then plugs the shaft above the discards with a carried full block (scaffold
 material first; never a falling block, a workstation, or one of the items being

@@ -59,6 +59,8 @@ export function attachHostileReflex(
   let previousPolicy = policy.combat;
   let previousFood = policy.food;
   let closing: Promise<void> | null = null;
+  const answeredAttacks = new Map<number, number>();
+  const unreachableIds = new Set<number>();
 
   const context: ResponseContext = {
     perception,
@@ -71,7 +73,7 @@ export function attachHostileReflex(
     get food() {
       return policy.food;
     },
-    unreachableIds: new Set(),
+    unreachableIds,
     get blockedResponses() {
       return answeredResponses(bot, () => policy.effective, driver);
     },
@@ -95,6 +97,7 @@ export function attachHostileReflex(
   };
   const resetPolicy = () => {
     encounterThreats.clear();
+    answeredAttacks.clear();
     transition(policy.reset("Death or dimension change; defaults restored."));
   };
   bot.on("death", resetPolicy);
@@ -105,6 +108,18 @@ export function attachHostileReflex(
     resetPolicy();
   };
   bot.on("game", dimensionChanged);
+
+  const freshAttack: BotEvents["entityHurt"] = (victim, source) => {
+    if (victim.id !== bot.entity.id || !isHostile(source)) return;
+    unreachableIds.delete(source.id);
+    for (const kind of ["fight", "hide", "evade"] as const) {
+      const scope = responseScope(bot, () => policy.effective, kind, kind === "fight" ? source.id : undefined);
+      driver.answered.forget(scope.capability, scope.scope);
+    }
+  };
+  bot.on("entityHurt", freshAttack);
+  const forgetDeparted: BotEvents["entityGone"] = (entity) => { answeredAttacks.delete(entity.id); };
+  bot.on("entityGone", forgetDeparted);
 
   const registration = driver.register({
     name: HOSTILE_REFLEX,
@@ -128,6 +143,17 @@ export function attachHostileReflex(
         policy.constrain(null);
         transition(policy.endEncounter());
       }
+      // An attack arriving during an older response can precede that response's
+      // failure receipt. Reopen the scope after settlement until the new hit
+      // is actually admitted, not merely when its packet arrives.
+      for (const contact of contacts) {
+        const hit = perception.recentAttack(contact.id);
+        if (hit === null || hit === answeredAttacks.get(contact.id)) continue;
+        for (const kind of ["fight", "hide", "evade"] as const) {
+          const scope = responseScope(bot, () => policy.effective, kind, kind === "fight" ? contact.id : undefined);
+          driver.answered.forget(scope.capability, scope.scope);
+        }
+      }
       // Aggression without attribution can require avoidance; it is not an attack authorization.
       // One read of the answered scopes serves both the decision and the
       // receipt's entry ids, so the two cannot disagree within a tick.
@@ -147,7 +173,18 @@ export function attachHostileReflex(
         contacts: observedFacts.contacts.filter((contact) => !policy.hostileReflexHeld(contact.name)),
       };
       const purpose = { kind: "automatic", quarry: policy.quarry } as const;
-      const directive = decideCombatResponse(facts, purpose);
+      const selected = decideCombatResponse(facts, purpose);
+      const unseen = contacts.filter((contact) => {
+        const hit = perception.recentAttack(contact.id);
+        return hit !== null && hit !== answeredAttacks.get(contact.id) &&
+          !facts.contacts.some((seen) => seen.id === contact.id);
+      });
+      const directive: HostileResponse | Extract<ReturnType<typeof decideCombatResponse>, { kind: "none" | "constrained" }> =
+        (selected.kind === "none" || selected.kind === "constrained") && unseen.length
+          ? policy.combat.retreat && !facts.answered.has("evade")
+            ? { kind: "evade", threats: unseen, safeRange: policy.combat.evade_safe_range, reason: "unseen_attack" }
+            : { kind: "constrained", reason: "[COMBAT_CONSTRAINED] An unseen attacker caused damage; retreat is prohibited or has already failed." }
+          : selected;
       const prepareShield = policy.combat.shield && !holdsShield(bot) &&
         !bot.usingHeldItem && !bot.currentWindow && bot.inventory.items().some((item) => item.name === "shield") &&
         Object.values(bot.entities).some((entity) => isHostile(entity) &&
@@ -181,6 +218,7 @@ export function attachHostileReflex(
           entries: [...entries].map(([response, entry]) => ({ response, entry })),
         },
         evidence: {
+          unseenAttackers: unseen.map((contact) => contact.id),
           threats: facts.contacts.map((contact) => ({
             id: contact.id,
             name: contact.name,
@@ -226,6 +264,10 @@ export function attachHostileReflex(
           error = message(cause);
         }
         return { kind: "shield_prepared", equipped: holdsShield(bot), error };
+      }
+      for (const threat of directive.threats) {
+        const sequence = perception.recentAttack(threat.id);
+        if (sequence !== null) answeredAttacks.set(threat.id, sequence);
       }
       activeResponse = directive.kind;
       responseRevision = policy.snapshot().revision;
@@ -330,6 +372,8 @@ export function attachHostileReflex(
         unsubscribePolicy();
         bot.off("death", resetPolicy);
         bot.off("game", dimensionChanged);
+        bot.off("entityHurt", freshAttack);
+        bot.off("entityGone", forgetDeparted);
         await registration[Symbol.asyncDispose]();
         await controller.stop("hostile contact observer closed");
       })()),

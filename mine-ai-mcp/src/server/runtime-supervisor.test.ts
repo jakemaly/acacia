@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startMcpSupervisor } from "./runtime-supervisor.js";
 
@@ -169,6 +170,42 @@ async function supervisorSavesFailure(fault: "hang" | "microtask" | "sse-hang" |
 }
 
 concurrentTests({
+  "a synchronous freeze records the last entered operation before the watchdog kills the runtime": async () => {
+    await using run = await supervised("sync-attribution");
+    await whenHealthy(run.url);
+    const response = await fetch(`${run.url}/sync-hang`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 75, method: "tools/call", params: { name: "sync-hang" } }),
+    });
+    assert.match(await response.text(), /RUNTIME_UNRESPONSIVE/);
+    const status = await (await fetch(`${run.url}/health`)).json();
+    const records = (await readFile(status.runtime.failure.incident.artifact.path, "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const diagnostic = records.find((row) => row.kind === "synchronous_diagnostic");
+    assert.equal(diagnostic?.available, true);
+    assert.equal(diagnostic?.latest?.state, "entered");
+    assert.equal(diagnostic.latest.operation, "fault_injection");
+    assert.equal(diagnostic.latest.phase, "deliberate_spin");
+    assert.match(diagnostic.latest.stack, /wedged-runtime/);
+    assert.equal(diagnostic.active.at(-1).phase, "deliberate_spin");
+    assert.equal(diagnostic.incomplete, false);
+  },
+  "a completed synchronous operation is not presented as the active freeze": async () => {
+    await using run = await supervised("sync-returned");
+    await whenHealthy(run.url);
+    await fetch(`${run.url}/after-sync-hang`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 76, method: "tools/call", params: { name: "after-sync-hang" } }),
+    });
+    const status = await (await fetch(`${run.url}/health`)).json();
+    const records = (await readFile(status.runtime.failure.incident.artifact.path, "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const diagnostic = records.find((row) => row.kind === "synchronous_diagnostic");
+    assert.equal(diagnostic.latest.state, "returned");
+    assert.equal(diagnostic.latest.phase, "finished_before_spin");
+    assert.deepEqual(diagnostic.active, []);
+  },
   "retains active request and restored phase after the client and entry event are gone": async () => {
     await using run = await supervised("attribution");
     const { url } = run;
@@ -227,6 +264,27 @@ concurrentTests({
     await supervisor.close();
     assert.ok(supervisor.child.exitCode !== null || supervisor.child.signalCode !== null, "close must reap its runtime.");
   },
+});
+
+test("a full diagnostic pipe cannot block the runtime", { timeout: 10_000 }, async () => {
+  const child = spawn(executable, [
+    ...process.execArgv, fileURLToPath(new URL("../test-support/diagnostic-backpressure.ts", import.meta.url)),
+  ], {
+    env: { ...process.env, MINE_AI_DIAGNOSTIC_FD: "4" },
+    stdio: ["ignore", "pipe", "inherit", "ignore", "pipe"],
+  });
+  let output = "";
+  child.stdout!.on("data", (chunk) => { output += chunk; });
+  try {
+    const code = await Promise.race([
+      new Promise<number | null>((resolve) => child.once("exit", resolve)),
+      delay(7000).then(() => { throw new Error("Diagnostic backpressure blocked the runtime."); }),
+    ]);
+    assert.equal(code, 0);
+    assert.match(output, /finished/);
+  } finally {
+    child.kill("SIGKILL");
+  }
 });
 
 test("a runtime launch failure stays observable and can be closed", { timeout: 5000 }, async () => {

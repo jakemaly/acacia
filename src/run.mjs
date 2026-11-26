@@ -1,10 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, appendFileSync, createWriteStream } from 'node:fs';
-import { link, lstat, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { access, link, lstat, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { Agent, fetch } from 'undici';
@@ -23,6 +24,31 @@ const bot = 'Acacia';
 const advancement = 'minecraft:end/kill_dragon';
 const owner = root => `minecraft-mine-ai=${root}`;
 
+const exec = promisify(execFile);
+const buildScript = fileURLToPath(new URL('../deploy/build-bot-image.sh', import.meta.url));
+
+/** Build the current checkout only when the default image is actually missing. */
+export async function inspectGameImage(image, { inspect = docker, build = signal => exec('bash', [buildScript, '--ensure'], {
+  timeout: 30 * 60_000, maxBuffer: 8 * 1024 * 1024, signal,
+}), signal, onBuild = () => {} } = {}) {
+  try {
+    return await inspect(['image', 'inspect', image], { timeout: 10_000, signal });
+  } catch (error) {
+    if (image !== mineImage || !/no such image:/i.test(String(error.stderr ?? ''))) throw error;
+    signal?.throwIfAborted();
+    onBuild();
+    try {
+      await build(signal);
+    } catch (failure) {
+      if (signal?.aborted) signal.throwIfAborted();
+      const detail = String(failure.stderr || failure.message).trim().slice(-3000);
+      throw new Error(`Could not rebuild the missing Minecraft image: ${detail}`, { cause: failure });
+    }
+    signal?.throwIfAborted();
+    return inspect(['image', 'inspect', image], { timeout: 10_000, signal });
+  }
+}
+
 export async function recoverRuns(root) {
   const selector = ['--filter', `label=${owner(root)}`, '--quiet'];
   const containers = (await docker(['ps', '-a', ...selector], { timeout: 15_000 })).stdout.trim().split(/\s+/).filter(Boolean);
@@ -36,6 +62,11 @@ export function dragonAdvancement(log, username = bot) {
     String.raw`^\[\d{2}:\d{2}:\d{2}\] \[Server thread/INFO\]: ${RegExp.escape(username)} has made the advancement \[Free the End\]\r?$`,
     'm',
   ))?.[0].trimEnd() ?? null;
+}
+
+export async function clearStaleRunSockets(directory, sockets) {
+  await Promise.all(['mcp', 'viewer', 'game'].flatMap(name => [directory, sockets]
+    .map(path => rm(join(path, `${name}.sock`), { force: true }))));
 }
 
 export function createLabEvidenceCollector({ id, serverOutput, write, waitFor, serverExit }) {
@@ -114,8 +145,9 @@ function forward(host, port, path, allowed) {
 }
 
 export function startRun(config) {
-  const id = randomUUID().replaceAll('-', '').slice(0, 12);
-  const seed = config.lab?.fixture?.seed ?? config.lab?.checkpoint?.metadata?.runtime?.seed ?? randomBytes(8).readBigInt64BE().toString();
+  const id = config.id ?? randomUUID().replaceAll('-', '').slice(0, 12);
+  if (!/^[a-f0-9]{12}$/.test(id)) throw new Error('Invalid run ID.');
+  let seed = config.lab?.fixture?.seed ?? config.lab?.checkpoint?.metadata?.runtime?.seed ?? randomBytes(8).readBigInt64BE().toString();
   const directory = join(config.root, id);
   const hardcore = config.lab ? config.lab.checkpoint?.metadata?.runtime?.hardcore === true : config.hardcore === true;
   const profile = defaultPrimitives;
@@ -166,7 +198,10 @@ export function startRun(config) {
   async function execute() {
     const world = join(directory, 'server');
     const data = join(directory, 'bot');
-    const recording = join(directory, 'recording');
+    const recording = config.resume
+      ? join(directory, 'recording', 'segments', randomUUID().replaceAll('-', '').slice(0, 12))
+      : join(directory, 'recording');
+    if (config.resume) run.recordingSegment = recording.slice(directory.length + 1);
     const forwards = [];
     const label = owner(config.root);
     const common = [
@@ -174,7 +209,7 @@ export function startRun(config) {
       '--label', label, '--network', network, '--cap-drop=ALL', '--security-opt', 'no-new-privileges',
       '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m',
     ];
-    let server, serverExit, mineExit, agent, networkCreated, hasManifest, proof, stopped = false;
+    let server, serverExit, mineExit, agent, networkCreated, hasManifest, proof, stopped = false, savedManifest;
     let ready = false;
     let savedWorld = false;
     let death;
@@ -183,18 +218,34 @@ export function startRun(config) {
     const terminal = new Promise(resolve => { finish = resolve; });
     const prompt = new URL(hardcore ? '../deploy/hardcore.txt' : '../deploy/prompt.txt', import.meta.url);
     try {
-      await mkdir(directory, { mode: 0o700 });
-      await Promise.all([data, recording, sockets].map(path => mkdir(path, { mode: 0o700 })));
+      if (config.resume) {
+        try {
+          savedManifest = JSON.parse(await readFile(join(directory, 'run.json'), 'utf8'));
+          await access(join(world, 'world', 'level.dat'));
+        } catch (failure) {
+          throw new Error(`Cannot resume the saved world: ${failure.message}`);
+        }
+        if (savedManifest.id !== id || savedManifest.hardcore !== hardcore || typeof savedManifest.seed !== 'string') {
+          throw new Error('Cannot resume the saved world: run metadata does not match.');
+        }
+        run.seed = seed = savedManifest.seed;
+      } else await mkdir(directory, { mode: 0o700 });
+      await Promise.all([data, recording, sockets].map(path => mkdir(path, { mode: 0o700, recursive: Boolean(config.resume) })));
+      // Volume commits may retain socket names from the old Sandbox; never pin those stale inodes.
+      if (config.resume) await clearStaleRunSockets(directory, sockets);
       if (config.lab?.checkpoint) await restoreCheckpoint(config.lab.checkpoint.path, world);
-      else await mkdir(world, { mode: 0o700 });
+      else if (!config.resume) await mkdir(world, { mode: 0o700 });
       if (Buffer.byteLength(join(sockets, 'viewer.sock')) >= 108) throw new Error('Run directory is too long for Unix sockets.');
       const [gameplay, decision] = await Promise.all([
         readFile(prompt, 'utf8'), readFile(new URL('../deploy/decision.txt', import.meta.url), 'utf8'),
       ]);
       const extraInstructions = decision.trim();
       const promptText = config.lab?.instruction ?? (extraInstructions ? `${gameplay.trimEnd()}\n\n${extraInstructions}` : gameplay);
-      const selectedImage = config.lab?.image ?? config.collection?.runtime?.image ?? mineImage;
-      const inspected = await docker(['image', 'inspect', selectedImage], { timeout: 10_000 });
+      const selectedImage = (config.resume && savedManifest?.imageDigest) || config.lab?.image || config.collection?.runtime?.image || mineImage;
+      const inspected = await inspectGameImage(selectedImage, { signal, onBuild: () => {
+        run.detail = 'Minecraft image is missing. Building the current version automatically.';
+      } });
+      run.detail = null;
       const [image] = JSON.parse(inspected.stdout);
       const labels = image.Config.Labels ?? {};
       const sourceCommit = labels['org.opencontainers.image.acacia-revision'];
@@ -218,22 +269,26 @@ export function startRun(config) {
         jarHash, promptSha256: createHash('sha256').update(promptText).digest('hex'),
         hardcore, profile, model: modelId, thinkingLevel,
         lab: config.lab?.summary, candidateImage: Boolean(config.lab?.candidateImage) };
+      if (savedManifest && (savedManifest.imageDigest !== image.Id || savedManifest.sourceDigest !== sourceDigest || savedManifest.jarHash !== jarHash)) {
+        throw new Error('Cannot resume the saved world with a different runtime.');
+      }
       if (config.collection?.runtime && !isDeepStrictEqual(config.collection.runtime, runtime)) {
         throw new Error('The current Minecraft runtime differs from this collection session.');
       }
       if (config.collection) config.collection.runtime = runtime;
-      await writeFile(join(directory, 'run.json.tmp'), JSON.stringify({
+      if (!savedManifest) await writeFile(join(directory, 'run.json.tmp'), JSON.stringify({
         id, seed, bot, version: '1.21.4', revision, forkRepository, forkCommit, imageDigest: image.Id, ...runtime,
         parent: config.parent, collectionSession: config.collection?.id, lab: config.lab?.summary,
       }, null, 2));
-      await rename(join(directory, 'run.json.tmp'), join(directory, 'run.json'));
+      if (!savedManifest) await rename(join(directory, 'run.json.tmp'), join(directory, 'run.json'));
       hasManifest = true;
+      if (config.resume) await rm(join(directory, 'result.json'), { force: true });
       signal.throwIfAborted();
       const jar = config.jar ?? join(config.root, 'server.jar');
       await verifiedJar(config.root, jar, signal);
       signal.throwIfAborted();
       await writeFile(join(world, 'eula.txt'), 'eula=true\n');
-      if (!config.lab?.checkpoint) await writeFile(join(world, 'server.properties'), [
+      if (!config.lab?.checkpoint && !config.resume) await writeFile(join(world, 'server.properties'), [
         'online-mode=false', 'gamemode=spectator', 'force-gamemode=true',
         `difficulty=${config.lab?.fixture?.difficulty ?? (hardcore ? 'hard' : 'normal')}`, `hardcore=${hardcore}`,
         `level-seed=${seed}`, ...(config.lab?.fixture?.worldType === 'flat' ? ['level-type=minecraft:flat'] : []),
@@ -277,6 +332,7 @@ export function startRun(config) {
         ...common, '--name', mineName, '--memory', '3g', '--cpus', '2', '--pids-limit', '512',
         '-v', `${data}:/data:rw`, '-v', `${recording}:/recording:rw`, '-v', `${sockets}:/sockets:rw`,
         '-e', 'HOME=/data', '-e', `MINECRAFT_BOT=${bot}`, '-e', 'MINE_AI_RECORDING_DIR=/recording',
+        ...(config.viewerPrefix ? ['-e', `MINE_AI_VIEWER_PREFIX=${config.viewerPrefix}`] : []),
         '-e', `MINE_AI_BASE_POLICY=${JSON.stringify(minePolicy(profile))}`, image.Id,
       ]));
       const mcp = join(directory, 'mcp.sock');
@@ -357,7 +413,7 @@ export function startRun(config) {
         run.state = 'running';
         const collectLabEvidence = createLabEvidenceCollector({ id, serverOutput,
           write: command => server.stdin.write(command), waitFor, serverExit });
-        agent = play({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText,
+        agent = (config.play ?? play)({ directory, socket: mcp, agentDir: config.agentDir, signal, record, promptText,
           collectContext: Boolean(collector), inference: config.inference,
           lab: config.lab?.fixture ?? (config.lab?.checkpoint ? { controller: { type: 'agent' }, checks: config.lab.checks } : undefined),
           resumeSession: config.lab?.checkpoint?.metadata?.context ? join(world, 'pi.jsonl') : undefined,
@@ -466,7 +522,7 @@ export function startRun(config) {
     function launch(name, args, onLine) {
       const child = spawn('docker', ['run', ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
       child.stdin.on('error', () => {});
-      const log = createWriteStream(join(directory, `${name}.log`), { mode: 0o600 });
+      const log = createWriteStream(join(directory, `${name}.log`), { mode: 0o600, flags: config.resume ? 'a' : 'w' });
       log.on('error', fail);
       const lines = createInterface({ input: child.stdout });
       lines.on('line', line => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -45,8 +45,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.TEST_DOCKER_LOG, JSON.stringify(args) + '\\n');
+if (process.env.TEST_TRACK_IMAGES === '1' && args[0] === 'image' && args[1] === 'inspect') {
+  if (!fs.existsSync(process.env.TEST_IMAGE_MARKER)) process.exit(1);
+  console.log('[]');
+  process.exit(0);
+}
+if (process.env.TEST_TRACK_IMAGES === '1' && args[0] === 'tag' && args[2] === '${mineImage}') {
+  fs.writeFileSync(process.env.TEST_IMAGE_MARKER, 'ready');
+}
 if (args[0] === 'build' || (args[0] === 'buildx' && args[1] === 'build')) {
   if (process.env.TEST_BUILD_FAIL === '1') process.exit(42);
+  if (process.env.TEST_TRACK_IMAGES === '1') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
   const context = path.resolve(args.at(-1));
   fs.cpSync(context, process.env.TEST_BUILD_CONTEXT, { recursive: true });
 }
@@ -76,6 +85,24 @@ test('the Minecraft checkout contains the current Mine AI server and Enderman to
   await readFile(join(repository, 'mine-ai-mcp/LICENSE'));
   const contract = await readFile(join(repository, 'mine-ai-mcp/src/actions/hunt-endermen-under-umbrella/contract.ts'), 'utf8');
   assert.match(contract, /hunt_endermen_under_umbrella/);
+});
+
+test('simultaneous missing-image recovery requests perform only one build', async () => {
+  const { root, checkout } = await workspace();
+  try {
+    const env = { ...await dockerStub(root), TEST_TRACK_IMAGES: '1', TEST_IMAGE_MARKER: join(root, 'image-ready') };
+    const run = () => new Promise((resolveRun, reject) => {
+      const child = spawn('bash', ['deploy/build-bot-image.sh', '--ensure'], { cwd: checkout, env, stdio: 'ignore' });
+      child.on('error', reject);
+      child.on('exit', code => code === 0 ? resolveRun() : reject(new Error(`Image recovery exited ${code}`)));
+    });
+    await Promise.all([run(), run()]);
+    const calls = (await readFile(env.TEST_DOCKER_LOG, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(calls.filter(args => args[0] === 'build').length, 1);
+    assert.ok(calls.some(args => args[0] === 'tag' && args[2] === mineImage));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('the repository exposes the documented bot build command', async () => {

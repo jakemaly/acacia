@@ -209,6 +209,12 @@
     .run-state.ready { color:var(--green); }
     .playback-meta .run-actions { margin-left:auto; }
     .run-actions button { min-height:32px; padding:5px 10px; font:13px system-ui,sans-serif; }
+    .modal-slots { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; padding:0 0 6px; }
+    .modal-slot { min-width:0; padding:5px 8px; border:1px solid var(--line); text-align:left; overflow-wrap:anywhere; font:11px/1.4 system-ui,sans-serif; }
+    .modal-slot[aria-pressed="true"] { border-color:var(--green); color:var(--green); }
+    .modal-slot span { display:block; color:var(--muted); }
+    #modal-count { width:48px; }
+    #modal-budget { margin:0 0 6px; color:var(--muted); font:11px system-ui,sans-serif; }
     .theme-toggle { display:flex; align-items:center; gap:8px; width:116px; justify-content:space-between; margin-top:auto; padding:8px 2px 0; text-align:left; color:var(--text); font:12px system-ui,sans-serif; }
     .switch-track { display:flex; width:28px; height:15px; justify-content:flex-end; align-items:center; padding:2px; background:var(--trace-tool); }
     .switch-dot { display:block; width:11px; height:11px; background:url("assets/dark-theme-enabled.svg") center/contain no-repeat; }
@@ -277,6 +283,8 @@
     <section class="studio-layout" id="studio">
       <section class="stage-column" aria-label="Minecraft world">
         <div class="playback-panel">
+          <div id="modal-slots" class="modal-slots" aria-label="Parallel worlds" hidden></div>
+          <p id="modal-budget" hidden></p>
           <div class="viewer" id="viewer"><div class="viewer-empty">Start a run to open the live first-person world view.</div></div>
           <div class="playback-meta">
             <div class="health-row" aria-label="Player health">
@@ -291,12 +299,16 @@
             </div>
             <div class="run-actions">
               <span id="run-state" class="run-state">No run</span>
+              <select id="run-compute" aria-label="Compute location"><option value="local">Local</option><option value="modal">Modal</option></select>
+              <input id="modal-count" type="number" min="1" max="64" value="4" aria-label="Parallel worlds" hidden>
+              <button id="modal-resize" hidden>Set worlds</button>
               <select id="run-mode" aria-label="Run mode" disabled>
                 <option value="survival">Survival</option>
                 <option value="hardcore">Hardcore</option>
               </select>
               <button id="start" class="primary" disabled>Start</button>
               <button id="stop" class="danger" hidden>Stop</button>
+              <button id="modal-resume" hidden>Resume</button>
             </div>
           </div>
           <label id="checkpoint-control"><input type="checkbox" id="collect-checkpoints" disabled> Collect checkpoints</label>

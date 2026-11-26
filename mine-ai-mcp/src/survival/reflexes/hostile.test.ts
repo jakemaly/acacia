@@ -67,6 +67,143 @@ function hostile(id: number, name: string, x: number): Entity {
   } as unknown as Entity;
 }
 
+test("a mounted zombie follows its moving chicken into combat contact", async () => {
+  let engaged: number | null = null;
+  await using fixture = reflexFixture(async (id) => {
+    engaged = id;
+    return died(id);
+  });
+  const chicken = {
+    id: 8, name: "chicken", kind: "Passive mobs", isValid: true,
+    position: new Vec3(20, 64, 0), height: 0.7, width: 0.4, passengers: [],
+  } as unknown as Entity;
+  const zombie = hostile(7, "zombie", 20);
+  zombie.height = 0.975;
+  zombie.vehicle = chicken;
+  chicken.passengers.push(zombie);
+  fixture.bot.entities[7] = zombie;
+  fixture.bot.entities[8] = chicken;
+  fixture.bot._client.emit("set_passengers", { entityId: 8, passengers: [7] });
+  fixture.tick();
+  assert.equal(engaged, null, "the distant rider should not trigger a fight");
+  chicken.position.set(1, 64, 0);
+  fixture.bot.emit("entityMoved", chicken);
+  fixture.tick();
+  assert.ok(await until(() => engaged === 7), "the moving rider should trigger combat at the chicken's position");
+});
+
+test("fresh damage re-arms defence when the attacker's reported position is hidden", async () => {
+  let attempts = 0;
+  await using fixture = reflexFixture(async () => {
+    throw new Error("Do not swing at an unseen attacker");
+  }, async () => {
+    attempts++;
+    return { status: "stopped", reason: "no path", elapsedMs: 1 };
+  });
+  fixture.bot.world.raycast = (() => ({ position: new Vec3(3, 64, 0) })) as unknown as typeof fixture.bot.world.raycast;
+  const zombie = hostile(7, "zombie", 10);
+  fixture.bot.entities[7] = zombie;
+  fixture.tick();
+  assert.equal(attempts, 0, "a hidden zombie with no attack must not trigger an escape");
+  fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+  fixture.tick();
+  assert.ok(await until(() => attempts === 1 && fixture.recorded().length === 1), "actual damage must trigger a defence");
+  for (let i = 0; i < 5; i++) fixture.tick();
+  assert.equal(attempts, 1, "one hit must not cause an endless retry loop");
+  fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+  fixture.tick();
+  assert.ok(await until(() => attempts === 2), "a later hit must reopen the failed defence");
+});
+
+test("an unseen attack during a failed escape is answered after that escape releases", async () => {
+  let attempts = 0;
+  let release!: (result: { status: "stopped"; reason: string; elapsedMs: number }) => void;
+  const firstRoute = new Promise<{ status: "stopped"; reason: string; elapsedMs: number }>((resolve) => { release = resolve; });
+  await using fixture = reflexFixture(async (id) => died(id), async () => {
+    attempts++;
+    return attempts === 1 ? firstRoute : { status: "stopped", reason: "no path", elapsedMs: 1 };
+  });
+  fixture.bot.world.raycast = (() => ({ position: new Vec3(3, 64, 0) })) as unknown as typeof fixture.bot.world.raycast;
+  const zombie = hostile(7, "zombie", 10);
+  fixture.bot.entities[7] = zombie;
+  fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+  fixture.tick();
+  try {
+    assert.ok(await until(() => attempts === 1));
+    fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+    fixture.tick();
+    release({ status: "stopped", reason: "no path", elapsedMs: 1 });
+    assert.ok(await until(() => fixture.recorded().length === 1 && !fixture.runner.status().busy));
+    fixture.tick();
+    assert.ok(await until(() => attempts === 2), "the newer attack must survive settlement of the older escape");
+  } finally {
+    release({ status: "stopped", reason: "cleanup", elapsedMs: 1 });
+  }
+});
+
+test("a new hit during a failed visible fight re-arms the fight after it releases", async () => {
+  let attempts = 0;
+  let release!: () => void;
+  const firstFight = new Promise<void>((resolve) => { release = resolve; });
+  await using fixture = reflexFixture(async (id) => {
+    attempts++;
+    if (attempts === 1) {
+      await firstFight;
+      throw new Error("equipment unavailable");
+    }
+    return died(id);
+  });
+  await fixture.editPolicy({ combat: { retreat: false } });
+  const zombie = hostile(7, "zombie", 2);
+  fixture.bot.entities[7] = zombie;
+  fixture.tick();
+  try {
+    assert.ok(await until(() => attempts === 1));
+    fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+    fixture.tick();
+    release();
+    assert.ok(await until(() => fixture.recorded().length === 1 && !fixture.runner.status().busy));
+    fixture.tick();
+    assert.ok(await until(() => attempts === 2), "a new hit must reopen the fight after the old failure");
+  } finally { release(); }
+});
+
+test("an unseen attack from an implausibly distant position cannot count as safe separation", async () => {
+  let alreadySafe: boolean | null = null;
+  await using fixture = reflexFixture(async (id) => died(id), async ({ goal }) => {
+    const resolved = goal.resolve({ entities: new Map([[7, fixture.bot.entities[7]]]) } as never);
+    assert.equal(resolved.kind, "active");
+    if (resolved.kind === "active")
+      alreadySafe = resolved.isSatisfied({ feet: { x: 0, y: 64, z: 0 }, remainingScaffolds: 0, overlayId: "test" }, new MemoryWorld());
+    return { status: "completed", elapsedMs: 1 };
+  });
+  fixture.bot.world.raycast = (() => ({ position: new Vec3(3, 64, 0) })) as unknown as typeof fixture.bot.world.raycast;
+  const zombie = hostile(7, "zombie", 60);
+  fixture.bot.entities[7] = zombie;
+  fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+  fixture.tick();
+  assert.ok(await until(() => fixture.recorded().length === 1));
+  assert.equal(alreadySafe, false, "the bot must move away from the site of the unexplained hit");
+  assert.notDeepEqual(fixture.recorded(), ["evade -> safe_separation"], "unseen location cannot prove separation");
+});
+
+test("a hidden attacker does not override an explicit ban on retreat", async () => {
+  let escapes = 0;
+  await using fixture = reflexFixture(async () => { throw new Error("Unseen targets must not be attacked"); }, async () => {
+    escapes++;
+    return { status: "stopped", reason: "unexpected", elapsedMs: 0 };
+  });
+  fixture.bot.world.raycast = (() => ({ position: new Vec3(3, 64, 0) })) as unknown as typeof fixture.bot.world.raycast;
+  const zombie = hostile(7, "zombie", 10);
+  fixture.bot.entities[7] = zombie;
+  await fixture.editPolicy({ combat: { retreat: false } });
+  fixture.bot.emit("entityHurt", fixture.bot.entity, zombie);
+  fixture.tick();
+  await until(() => fixture.runner.status().busy);
+  assert.equal(escapes, 0);
+  assert.equal(fixture.runner.status().owner, "idle");
+});
+
 test("an automatic target disappearing resumes the original request without claiming a kill", async () => {
   await using fixture = reflexFixture(async (targetId) => {
     fixture.bot.entities[targetId]!.isValid = false;

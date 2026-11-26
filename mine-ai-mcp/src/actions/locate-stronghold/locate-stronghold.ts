@@ -171,7 +171,7 @@ async function locate(
       )
     )
       throw new Error(
-        "Another player is within six blocks; an eye spawn here would not identify its thrower reliably.",
+        "An eye spawn here would not identify its thrower reliably; move to a clear position and retry.",
       );
     await bot.equip(eye, "hand");
     assertActive();

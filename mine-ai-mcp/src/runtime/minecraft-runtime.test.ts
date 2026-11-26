@@ -273,7 +273,7 @@ test("the Minecraft runtime owns frontier attachment and its action catalog", as
 
   // Which observers attach is each observer's own business; the runtime's is
   // that they attach here and that close detaches every one (below).
-  const attached = ["chunkColumnLoad", "chunkColumnUnload", "blockUpdate", "physicsTick", "chat", "whisper", "death"] as const;
+  const attached = ["chunkColumnLoad", "chunkColumnUnload", "blockUpdate", "physicsTick", "death"] as const;
   for (const eventName of attached) assert.ok(bot.listenerCount(eventName) > 0, eventName);
   // The catalog is published whole: every action has a distinct name and its schemas.
   const names = runtime.actions.map((action) => action.name);
@@ -313,21 +313,13 @@ test("the Minecraft runtime owns frontier attachment and its action catalog", as
   for (const name of declaring) assert.ok(names.includes(name!), name);
 
   bot.emit("chat", "Alex", "Hello RuntimeBot", null, {} as never, null);
-  assert.deepEqual(runtime.notificationSummary(), {
-    unreadCount: 1,
-    recentPreview: ["Alex: Hello RuntimeBot"],
-    hint: "Use read_recent_events to read and advance through recent events.",
-  });
+  assert.deepEqual(runtime.notificationSummary(), { unreadCount: 0 });
 
   const sendMessageAction = runtime.actions.find((action) => action.name === "send_message");
   assert.ok(sendMessageAction);
   const sent = await runtime.run(sendMessageAction, { message: "Hello Alex" });
   assert.deepEqual(sent.result, { status: "succeeded", message: "Hello Alex" });
-  assert.deepEqual(runtime.notificationSummary(), {
-    unreadCount: 1,
-    recentPreview: ["Alex: Hello RuntimeBot"],
-    hint: "Use read_recent_events to read and advance through recent events.",
-  });
+  assert.deepEqual(runtime.notificationSummary(), { unreadCount: 0 });
 
   Object.assign(bot.entity, { isInWater: true });
   bot.emit("physicsTick");

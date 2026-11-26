@@ -163,17 +163,15 @@ export function readNotificationSummary(data: SqlBotData, botId: string): Notifi
   const owner = eventBotId(botId);
   const unread = data.read(
     `WITH unread AS (
-       SELECT event_id, event_type, summary
+       SELECT event_id, event_type,
+         CASE WHEN event_type = 'player_death' THEN 'The bot died; read recent events for its location.' ELSE summary END AS summary
        FROM events
        WHERE bot_id = ?
          AND event_id > COALESCE(
            (SELECT read_through_event_id FROM event_read_state WHERE bot_id = ?),
            0
          )
-         AND (
-           event_type <> 'player_message'
-           OR json_extract(payload_json, '$.direction') = 'incoming'
-         )
+         AND event_type <> 'player_message'
      )
      SELECT event_id, event_type, summary, count(*) OVER () AS unread_count
      FROM unread

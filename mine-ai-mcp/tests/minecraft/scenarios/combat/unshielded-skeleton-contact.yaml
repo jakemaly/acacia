@@ -1,0 +1,59 @@
+template: ../../templates/combat-idle-midnight.yaml
+
+tags: [acceptance, regression]
+description: >-
+  Unarmoured players with a stone sword and no shield face native skeleton
+  contact, including the two-skeleton and zombie crossfire seen in run
+  bbfc897ebbd0. Stay alive through the encounter without prescribing a tactic.
+
+world:
+  type: flat
+  time: midnight
+  difficulty: hard
+  gamerules:
+    doDaylightCycle: false
+    doMobSpawning: false
+    keepInventory: true
+    naturalRegeneration: false
+    randomTickSpeed: 0
+
+entities:
+  - type: skeleton
+    pos: [7.5, -60, 0.5]
+    nbt: '{PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}],Tags:["solo"]}'
+  - type: skeleton
+    pos: [206.5, -60, -2.5]
+    nbt: '{PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}],Tags:["crossfire"]}'
+  - type: skeleton
+    pos: [209.5, -60, 3.5]
+    nbt: '{PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}],Tags:["crossfire"]}'
+  - type: zombie
+    pos: [206.5, -60, 2.5]
+    nbt: '{PersistenceRequired:1b,IsBaby:0b,Tags:["crossfire"]}'
+
+players:
+  - name: SoloUnshielded
+    pos: [0.5, -60, 0.5]
+    inventory:
+      - { item: stone_sword, count: 1 }
+      - { item: cobblestone, count: 32 }
+  - name: Crossfire
+    pos: [200.5, -60, 0.5]
+    inventory:
+      - { item: stone_sword, count: 1 }
+      - { item: cobblestone, count: 32 }
+
+params:
+  waitTicks: 500
+
+tick:
+  - "gamemode spectator @a[name=!SoloUnshielded,name=!Crossfire,gamemode=!spectator]"
+
+goal:
+  kind: all
+  timeout: 90
+  goals:
+    - { kind: survive, who: SoloUnshielded, seconds: 20 }
+    - { kind: completion, who: SoloUnshielded }
+    - { kind: survive, who: Crossfire, seconds: 20 }
+    - { kind: completion, who: Crossfire }

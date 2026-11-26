@@ -35,7 +35,7 @@ export const unreadEventsPageQuery = defineSqlQuery({
   sql: `
     SELECT event_id, bot_id, event_type, observed_at, summary, payload_json
     FROM main.events
-    WHERE bot_id = ? AND event_id > ?
+    WHERE bot_id = ? AND event_id > ? AND event_type <> 'player_message'
     ORDER BY event_id
     LIMIT ?
   `,
@@ -54,7 +54,7 @@ export const remainingEventsQuery = defineSqlQuery({
   id: "remaining-events-count",
   produces: "The number of events remaining after one bot's supplied event cursor.",
   parameterNames: ["botId", "readThroughEventId"] as const,
-  sql: "SELECT count(*) AS count FROM main.events WHERE bot_id = ? AND event_id > ?",
+  sql: "SELECT count(*) AS count FROM main.events WHERE bot_id = ? AND event_id > ? AND event_type <> 'player_message'",
   parseRow: (row) => Number(row.count),
 });
 
@@ -75,7 +75,10 @@ export function readRecentEvents(data: SqlBotData, botId: string, limit: number)
 
   return data.transaction((database) => {
     const readThrough = getSqlQuery(database, eventCursorQuery.bind({ botId })) ?? 0;
-    const events = allSqlQuery(database, unreadEventsPageQuery.bind({ botId, readThroughEventId: readThrough, limit }));
+    const events = allSqlQuery(database, unreadEventsPageQuery.bind({ botId, readThroughEventId: readThrough, limit }))
+      .map((event): BotEvent => event.type === "player_death"
+        ? { ...event, summary: "The bot died.", payload: { ...event.payload, cause: null } }
+        : event);
     const readThroughEventId = events.at(-1)?.eventId ?? readThrough;
 
     if (readThroughEventId > readThrough) {

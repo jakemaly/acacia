@@ -15,7 +15,8 @@ function variant(tool, name, description, { omit, require = [], defaults, operat
 }
 
 export function gameTools(catalogue) {
-  return catalogue.map(tool => {
+  // Arbitrary bot JavaScript can inspect online players and bypass privacy.
+  return catalogue.filter(tool => tool.name !== 'debug_execute_javascript').map(tool => {
     // Mine AI adds these two fields only when registering a foreground action.
     const schema = tool.inputSchema;
     if (!schema.required?.includes('submission_id') || !schema.properties?.wait_timeout_ms) return tool;

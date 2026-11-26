@@ -109,7 +109,17 @@ export async function evade(
     { tolerateShieldFailure: true, signal });
   signal.throwIfAborted();
   using defence = defendWhileRetreating(bot, context, signal);
-  const makeGoal = () => safeFromEntitiesGoal([...threats.values()], request.safeRange + EVADE_ARRIVAL_MARGIN);
+  // A hidden attacker's stored coordinates cannot establish either a safe
+  // direction or separation. Leave the place where the damage occurred.
+  const impact = request.reason === "unseen_attack"
+    ? { id: -1, position: bot.entity.position.clone() }
+    : null;
+  const visible = (id: number) => context.perception.read().find((entry) => entry.id === id)?.visible === true;
+  const makeGoal = () => safeFromEntitiesGoal(
+    [...threats.values()].filter((threat) => !impact || visible(threat.id))
+      .map(({ id, position }) => ({ id, position })).concat(impact ? [impact] : []),
+    request.safeRange + EVADE_ARRIVAL_MARGIN,
+  );
   let goal = makeGoal();
   // Each threat's last few observed positions, oldest first.
   const trails = new Map<number, { readonly x: number; readonly z: number }[]>();
@@ -249,7 +259,8 @@ export async function evade(
         bot,
         { ...request, threats: [...threats.values()] },
         healthBefore,
-      ).finalDistances.some((entry) => entry.distance < request.safeRange);
+      ).finalDistances.some((entry) => entry.distance < request.safeRange) ||
+        (impact !== null && bot.entity.position.distanceTo(impact.position) < request.safeRange);
       // A cube can split as a route completes. The old goal was reached, but
       // its newly observed children still need separation. Continue only after
       // a route that changed cells, within the same escape deadline.
@@ -284,7 +295,9 @@ export async function evade(
     }
     observe();
     const common = observeEvidence();
-    const separated = common.finalDistances.every((entry) => entry.distance >= request.safeRange);
+    const separated = common.finalDistances.every((entry) => entry.distance >= request.safeRange) &&
+      (!impact || (bot.entity.position.distanceTo(impact.position) >= request.safeRange &&
+        [...threats.keys()].every(visible)));
     if (separated) {
       // The route aims beyond the required range to allow for pursuit. A
       // timeout at 43 blocks had already escaped the required 36, but was

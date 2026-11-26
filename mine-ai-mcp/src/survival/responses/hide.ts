@@ -302,7 +302,7 @@ export async function hideInPlace(bot: Bot, options: HideOptions): Promise<HideR
       }
       itemUse.lowerShield();
       const built = await buildProtection(bot, [cell], {
-        signal, mayContinue: unsafe, terrain: policy.terrain, blockNames: options.blockNames,
+        signal, mayContinue: unsafe, terrain: policy.terrain, blockNames: options.blockNames, clearStairs: true,
       });
       if (built.kind === "blocked") refusal ??= `${cell.x},${cell.y},${cell.z}: ${built.reason}`;
       return built.placed.length > 0;

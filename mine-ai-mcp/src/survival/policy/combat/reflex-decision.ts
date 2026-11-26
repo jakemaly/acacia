@@ -59,6 +59,8 @@ export function describeDirectiveReason(reason: EvadeReason | HideReason | "inco
       return "unreachable: no fight answer remains for this contact";
     case "observed_aggression":
       return "observed_aggression: aggression without attack authorization";
+    case "unseen_attack":
+      return "unseen attack: damage was observed but the attacker's position is uncertain";
     case "withdraw":
       return "withdraw: no permitted attack, or defend_only engagement out of reach";
     case "cornered":

@@ -5,6 +5,7 @@ import type { CombatPolicy } from "../../policy/combat/contract.js";
 import { clearInstantObstructionAt, extinguishFireAt } from "../fire-clearance.js";
 import { capBlock } from "./hide-blocks.js";
 import { isReplaceableForPlacement } from "../../../world/block-classification.js";
+import { dryGroundedDigTime, selectHarvestTool } from "../../../navigation/mineflayer/movement-policy.js";
 
 export type ProtectionBuild =
   | { readonly kind: "built"; readonly placed: readonly Vec3[] }
@@ -33,6 +34,8 @@ export async function buildProtection(
     readonly terrain: Readonly<CombatPolicy["terrain"]>;
     /** Some hazards destroy ordinary walls; selection and existing cover must agree. */
     readonly blockNames?: readonly string[];
+    /** A shelter may replace a partial stair when it can do so quickly and safely. */
+    readonly clearStairs?: boolean;
   },
 ): Promise<ProtectionBuild> {
   const { signal, mayContinue, terrain } = options;
@@ -63,7 +66,36 @@ export async function buildProtection(
       return blocked(`Protection cell ${cell} holds ${bot.blockAt(cell)?.name ?? "a plant"}, which could not be punched out.`);
     const changedAfterClearing = mayContinue();
     if (changedAfterClearing) return blocked(changedAfterClearing);
-    const current = bot.blockAt(cell);
+    let current = bot.blockAt(cell);
+    if (options.clearStairs && terrain.dig && current?.name.endsWith("_stairs") && !protects(current)) {
+      const adjacent = [cell.offset(0, 1, 0), cell.offset(1, 0, 0), cell.offset(-1, 0, 0),
+        cell.offset(0, 0, 1), cell.offset(0, 0, -1)].map((position) => bot.blockAt(position));
+      const tool = selectHarvestTool(bot, current);
+      // A partial wall must be replaced, but opening an aquifer or spending
+      // seconds digging under fire is worse than reporting the failed shelter.
+      if (tool && bot.canDigBlock(current) && !current.getProperties().waterlogged &&
+        adjacent.every((block) => block && block.name !== "water" && block.name !== "lava" && !block.getProperties().waterlogged) &&
+        dryGroundedDigTime(bot, current, tool) <= 1500) {
+        if (bot.heldItem?.type !== tool.type) await bot.equip(tool, "hand");
+        signal.throwIfAborted();
+        const changedBeforeDig = mayContinue();
+        if (changedBeforeDig) return blocked(changedBeforeDig);
+        const cancel = () => bot.stopDigging();
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          await bot.dig(current, true);
+        } catch (cause) {
+          signal.throwIfAborted();
+          return blocked(`Could not clear stair at ${cell}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        } finally {
+          signal.removeEventListener("abort", cancel);
+        }
+        signal.throwIfAborted();
+        const changedAfterDig = mayContinue();
+        if (changedAfterDig) return blocked(changedAfterDig);
+        current = bot.blockAt(cell);
+      }
+    }
     if (!isReplaceableForPlacement(current))
       return blocked(
         `Protection cell ${cell} contains ${current?.name ?? "unobserved terrain"}, which cannot be replaced by placement.`,

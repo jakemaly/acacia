@@ -179,30 +179,6 @@ function hostileSleepFailure(bot: Bot, bed: AvailableBed, timeOfDay: number): Sl
   };
 }
 
-function otherPlayerSleepStates(bot: Bot): NonNullable<SleepEvidence["otherPlayers"]> {
-  const metadataKeys = bot.registry?.entitiesByName.player?.metadataKeys;
-  const poseIndex = metadataKeys?.indexOf("pose") ?? -1;
-  const sleepingPositionIndex = metadataKeys?.indexOf("sleeping_pos") ?? -1;
-
-  return Object.entries(bot.players)
-    .filter(([username]) => username && username !== bot.username)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([username, player]) => {
-      const entity = player.entity as typeof player.entity | null | undefined;
-      if (!entity || poseIndex < 0 || sleepingPositionIndex < 0) {
-        return { username, sleepState: "unknown" as const };
-      }
-
-      const metadata = entity.metadata as unknown[];
-      const pose = metadata[poseIndex];
-      const sleepingPosition = metadata[sleepingPositionIndex];
-      return {
-        username,
-        sleepState: pose === 2 || sleepingPosition != null ? ("sleeping" as const) : ("awake" as const),
-      };
-    });
-}
-
 async function setRespawnAtBed(
   bot: Bot,
   bed: AvailableBed,
@@ -283,7 +259,6 @@ async function sleepInBed(
 
   const timeAfter = bot.time.timeOfDay;
   const morning = !isBedSleepTime(timeAfter);
-  const otherPlayers = otherPlayerSleepStates(bot);
 
   return {
     status: "succeeded",
@@ -293,7 +268,6 @@ async function sleepInBed(
       respawnSet: true,
       timeOfDay: timeAfter,
       ...bedUseEvidence(bot, bed),
-      otherPlayers: otherPlayers.length > 0 ? otherPlayers : undefined,
       observation: morning
         ? sleepOutcomes.sleptMorning
         : bot.isSleeping
@@ -379,13 +353,6 @@ function formatSleepEvidence(sleep: SleepEvidence, error?: string): string {
   if (sleep.warning) lines.push("", `> **Bed reminder:** ${sleep.warning}`);
   if (sleep.bedPosition) {
     lines.push(`- Bed: \`${sleep.bedPosition.x}, ${sleep.bedPosition.y}, ${sleep.bedPosition.z}\``);
-  }
-  if (sleep.otherPlayers) {
-    lines.push("- Other players online:");
-    for (const player of sleep.otherPlayers) {
-      const state = player.sleepState === "unknown" ? "sleep state unknown" : player.sleepState;
-      lines.push(`  - ${player.username}: ${state}`);
-    }
   }
   if (sleep.nearbyHostiles) {
     lines.push("- Nearby hostile mobs:");

@@ -6,10 +6,43 @@ import { SqlBotData } from "../../bot-data/sql-bot-data.js";
 import { queryBotDataCellSchema } from "./contract.js";
 import { createQueryBotDataAction, formatQueryBotDataResult, queryBotData } from "./query-bot-data.js";
 import { temporaryBotData } from "../../test-support/bot-data.js";
+import { recordEvent, readNotificationSummary } from "../../bot-data/event-log.js";
+import { readRecentEvents } from "../read-recent-events/read-recent-events.js";
 
 const REGISTRY = {
   itemsArray: [{ id: 17, name: "oak_log", displayName: "Oak Log", stackSize: 64 }],
 } as unknown as Bot["registry"];
+
+test("legacy player chat cannot reach notifications, event pages, or model SQL", async (t) => {
+  const data = temporaryBotData({ closeAfter: t });
+  recordEvent(data, "MineAI", {
+    type: "player_message", observedAt: "2026-11-26T12:00:00.000Z", summary: "aycelol: private",
+    payload: { username: "aycelol", channel: "chat", direction: "incoming", message: "private", addressed: false },
+  });
+  assert.deepEqual(readNotificationSummary(data, "MineAI"), { unreadCount: 0 });
+  assert.deepEqual(readRecentEvents(data, "MineAI", 10).events, []);
+  for (const sql of [
+    "SELECT * FROM main.events",
+    "WITH e AS (SELECT payload_json FROM main.\"EVENTS\") SELECT json_extract(payload_json, '$.username') FROM e",
+    "SELECT * FROM main.action_responses",
+    "SELECT * FROM main.action_requests",
+    "SELECT * FROM main.action_executions",
+    "SELECT * FROM main.action_incidents",
+    "SELECT * FROM main.notes",
+  ]) await assert.rejects(queryBotData(data, { sql }), /not available|not authorized|privacy/i, sql);
+  assert.deepEqual((await queryBotData(data, { sql: "SELECT COUNT(*) FROM main.frontier_chunks" })).rows, [[0]]);
+});
+
+test("stored death text cannot leak a player name through gameplay events or SQL", async (t) => {
+  const data = temporaryBotData({ closeAfter: t });
+  recordEvent(data, "MineAI", {
+    type: "player_death", observedAt: "2026-11-26T12:00:00.000Z", summary: "MineAI was slain by aycelol",
+    payload: { dimension: "overworld", position: { x: 1, y: 64, z: 2 }, cause: "MineAI was slain by aycelol" },
+  });
+  assert.doesNotMatch(JSON.stringify(readNotificationSummary(data, "MineAI")), /aycelol/);
+  assert.doesNotMatch(JSON.stringify(readRecentEvents(data, "MineAI", 10)), /aycelol/);
+  assert.doesNotMatch(JSON.stringify(await queryBotData(data, { sql: "SELECT cause FROM bot_last_death" })), /aycelol/);
+});
 
 test("queries bot data and Minecraft knowledge on one connection", async (t) => {
   const data = temporaryBotData({ closeAfter: t });

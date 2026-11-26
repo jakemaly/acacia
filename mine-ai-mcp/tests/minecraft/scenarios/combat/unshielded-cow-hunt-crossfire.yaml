@@ -1,0 +1,56 @@
+template: ../../templates/flat-single-action-no-regen.yaml
+
+tags: [regression]
+description: >-
+  Reproduce an unshielded cow hunt crossing skeleton and zombie sightlines at
+  night on hard difficulty, as in Modal run bbfc897ebbd0.
+
+world:
+  type: flat
+  time: midnight
+  difficulty: hard
+  gamerules:
+    doDaylightCycle: false
+    doMobSpawning: false
+    keepInventory: true
+    naturalRegeneration: false
+    randomTickSpeed: 0
+
+reset:
+  - "kill @e[type=!minecraft:player]"
+  - "fill -18 -60 -6 18 -55 42 air"
+
+geometry:
+  - fill: { block: stone, from: [-18, -61, -6], to: [18, -61, 42] }
+
+entities:
+  - type: cow
+    pos: [0.5, -60, 35.5]
+    nbt: '{NoAI:1b,PersistenceRequired:1b}'
+  - type: skeleton
+    pos: [-3.5, -60, 15.5]
+    nbt: '{PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}]}'
+  - type: skeleton
+    pos: [5.5, -60, 17.5]
+    nbt: '{PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}]}'
+  - type: zombie
+    pos: [1.5, -60, 16.5]
+    nbt: '{PersistenceRequired:1b,IsBaby:0b}'
+
+players:
+  - name: Actor
+    pos: [0.5, -60, 0.5]
+    inventory:
+      - { item: stone_sword, count: 1 }
+      - { item: dirt, count: 32 }
+
+params:
+  action: collect_mob_drop
+  input: { mob_name: cow, drop_name: beef, count: 1 }
+
+goal:
+  kind: all
+  timeout: 150
+  goals:
+    - { kind: survive, who: Actor, seconds: 20 }
+    - { kind: completion, who: Actor }

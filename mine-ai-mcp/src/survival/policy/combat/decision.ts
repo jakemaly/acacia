@@ -212,6 +212,18 @@ export function decideCombatResponse(facts: CombatDecisionFacts, purpose: Combat
   // a quarry it cannot fight, and it does so by its own stop counts.
   const quarry = new Set(purpose.kind === "automatic" ? (purpose.quarry ?? []) : []);
   const hunted = (threat: CombatContact) => quarry.has(threat.name);
+  // Closing on an incidental archer without a usable shield or bow exposes
+  // the bot for several arrow volleys; prefer one withdrawal while there is
+  // still room, but keep close defence and explicit hunts available.
+  if (
+    policy.retreat &&
+    !answered.has("evade") &&
+    !(policy.shield && facts.shield) &&
+    !(policy.bow && facts.rangedWeapon) &&
+    !contacts.some((threat) => threat.inReach) &&
+    contacts.some((threat) => threat.inContact && threat.ranged && !hunted(threat))
+  )
+    return evade("withdraw");
   const candidates = contacts.filter(
     (threat) =>
       threat.inContact &&

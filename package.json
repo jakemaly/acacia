@@ -14,6 +14,7 @@
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-mcp": "1.4.0",
-    "undici": "7.28.0"
+    "undici": "7.28.0",
+    "ws": "^8.23.0"
   }
 }

@@ -91,6 +91,8 @@ export function occupiedCell(bot: Bot, cell: Position3 | null, ignoreEntityId?: 
         : bot.players[entity.username ?? ""]?.gamemode === 3)
     )
       continue;
+    if (cellIntersectsBody(cell, entity) && entity.type === "player")
+      return `Placement cell (${cell.x}, ${cell.y}, ${cell.z}) is occupied.`;
     if (cellIntersectsBody(cell, entity))
       return `Placement cell (${cell.x}, ${cell.y}, ${cell.z}) overlaps ${entity.name ?? entity.type} #${entity.id} at (${entity.position.x}, ${entity.position.y}, ${entity.position.z}).`;
   }

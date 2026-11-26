@@ -12,6 +12,7 @@ export const bedPositionSchema = z.strictObject({
   z: z.number(),
 });
 
+// Accept previously stored results; newly produced sleep evidence omits this field.
 export const otherPlayerSleepSchema = z.strictObject({
   username: z.string(),
   sleepState: z.enum(["sleeping", "awake", "unknown"]),

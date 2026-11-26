@@ -160,3 +160,54 @@ export function findLoadedBlockPositions(bot: Bot, scan: LoadedBlockScan): reado
   if (scan.limit === Number.POSITIVE_INFINITY) candidates.sort(compareCandidates);
   return candidates.map(({ x, y, z }) => new Vec3(x, y, z));
 }
+
+/** Count all loaded matches while retaining only the requested nearest positions. */
+export async function summarizeLoadedBlocks(
+  bot: Bot,
+  scan: Pick<LoadedBlockScan, "center" | "stateIds" | "limit">,
+  signal?: AbortSignal,
+): Promise<{ count: number; positions: readonly Vec3[] }> {
+  signal?.throwIfAborted();
+  if (scan.stateIds.size === 0) return { count: 0, positions: [] };
+  const columns = bot.world.getColumns() as unknown as readonly LoadedColumn[];
+  const center = new Vec3(scan.center.x, scan.center.y, scan.center.z).floored();
+  const sections = matchingSections(columns, center, Number.POSITIVE_INFINITY, scan.stateIds);
+  const candidates: Candidate[] = [];
+  let count = 0;
+  const local = { x: 0, y: 0, z: 0 };
+  for (let index = 0; index < sections.length; index++) {
+    // Yield between small batches so Minecraft physics and the host heartbeat
+    // continue even when common blocks fill millions of loaded cells.
+    if (index % 4 === 0) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      signal?.throwIfAborted();
+    }
+    const { section, origin, distanceSquared: sectionDistance, order: sectionOrder } = sections[index]!;
+    const singleValue = section.data.value;
+    const nearestPossible = scan.limit > 0 &&
+      (candidates.length < scan.limit || sectionDistance <= candidates[candidates.length - 1]!.distanceSquared);
+    if (singleValue !== undefined && !nearestPossible) {
+      count += 4096;
+      continue;
+    }
+    for (local.y = 0; local.y < 16; local.y++) {
+      const y = origin.y + local.y;
+      for (local.z = 0; local.z < 16; local.z++) {
+        const z = origin.z + local.z;
+        for (local.x = 0; local.x < 16; local.x++) {
+          if (singleValue === undefined && !scan.stateIds.has(section.get(local))) continue;
+          count++;
+          if (!nearestPossible) continue;
+          const x = origin.x + local.x;
+          const distanceSquared = (x - center.x) ** 2 + (y - center.y) ** 2 + (z - center.z) ** 2;
+          const order = sectionOrder * 4096 + local.y * 256 + local.z * 16 + local.x;
+          const worst = candidates[candidates.length - 1];
+          if (candidates.length === scan.limit && worst &&
+            (distanceSquared > worst.distanceSquared || (distanceSquared === worst.distanceSquared && order >= worst.order))) continue;
+          retainCandidate(candidates, { x, y, z, distanceSquared, order }, scan.limit);
+        }
+      }
+    }
+  }
+  return { count, positions: candidates.map(({ x, y, z }) => new Vec3(x, y, z)) };
+}

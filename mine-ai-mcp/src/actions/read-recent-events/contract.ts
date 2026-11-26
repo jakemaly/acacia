@@ -8,7 +8,7 @@ export const READ_RECENT_EVENTS = "read_recent_events" as const;
 export const DEFAULT_EVENT_LIMIT = 50;
 export const MAX_EVENT_LIMIT = 100;
 export const READ_RECENT_EVENTS_DESCRIPTION =
-  "Read the bot's oldest unread events in full and advance its event cursor through the returned page. Includes runtime lifecycle events and incoming and outgoing chat; notifications are a separate MCP response policy.";
+  "Read the bot's oldest unread gameplay and runtime events and advance its event cursor through the returned page.";
 
 export const readRecentEventsInputSchema = z.strictObject({
   limit: z

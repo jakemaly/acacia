@@ -32,7 +32,6 @@ export function observeHuntDrops(bot: Bot, requestedItem: string, lifetime: Abor
       firstSeen: baseline.has(entity.id) ? "already_loaded" : "during_hunt",
       state: "loaded",
       collectedByBot: previous?.collectedByBot ?? false,
-      collectedByOther: previous?.collectedByOther ?? false,
     });
   };
   const collected: BotEvents["playerCollect"] = (collector, entity) => {
@@ -40,7 +39,6 @@ export function observeHuntDrops(bot: Bot, requestedItem: string, lifetime: Abor
     const sighting = sightings.get(entity.id);
     if (!sighting) return;
     if (collector.id === bot.entity.id) sighting.collectedByBot = true;
-    else sighting.collectedByOther = true;
   };
   const gone: BotEvents["entityGone"] = (entity) => {
     observe(entity);

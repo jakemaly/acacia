@@ -17,41 +17,32 @@ function playerMessage(
   };
 }
 
-test("notification policy selects only incoming messages beyond this bot's cursor", (t) => {
-  const data = temporaryBotData();
-  t.after(() => data.close());
-
-  recordEvent(data, "collector", playerMessage("first"));
-  recordEvent(data, "builder", playerMessage("not for collector", "Builder"));
-  recordEvent(data, "collector", playerMessage("collector replied", "collector", "outgoing"));
-  recordEvent(data, "collector", playerMessage("second"));
-  recordEvent(data, "collector", playerMessage("third"));
-  recordEvent(data, "collector", playerMessage("a summary long enough to require a deliberately visible truncation"));
-
-  assert.deepEqual(readNotificationSummary(data, "collector"), {
-    unreadCount: 4,
-    recentPreview: ["second", "third", "a summary long enough to require a delib..."],
-    hint: "Use read_recent_events to read and advance through recent events.",
-  });
-  assert.deepEqual(readNotificationSummary(data, "builder"), {
-    unreadCount: 1,
-    recentPreview: ["not for collector"],
-    hint: "Use read_recent_events to read and advance through recent events.",
-  });
+test("notification policy hides legacy chat for every bot", (t) => {
+  const data = temporaryBotData({ closeAfter: t });
+  recordEvent(data, "collector", playerMessage("private spectator text"));
+  recordEvent(data, "builder", playerMessage("other private text", "OtherPlayer"));
+  recordEvent(data, "collector", playerMessage("outgoing", "collector", "outgoing"));
+  assert.deepEqual(readNotificationSummary(data, "collector"), { unreadCount: 0 });
+  assert.deepEqual(readNotificationSummary(data, "builder"), { unreadCount: 0 });
 });
+
+function gameplayEvent(summary: string): BotEventInput {
+  return { type: "player_dimension_change", observedAt: "2026-08-23T00:00:00.000Z", summary,
+    payload: { from: "overworld", to: "the_nether", position: { x: 0, y: 64, z: 0 } } };
+}
 
 /** A store on disk that this test writes, closes, and reopens under the same identity. */
 test("events and their cursors survive a restart", (t) => {
   const storage = persistentBotData(t);
   const open = () => storage.open("world");
   const first = open();
-  recordEvent(first, "collector", playerMessage("persisted"));
+  recordEvent(first, "collector", gameplayEvent("persisted"));
   readRecentEvents(first, "collector", 50);
   first.close();
 
   const reopened = open();
   assert.deepEqual(readNotificationSummary(reopened, "collector"), { unreadCount: 0 });
-  const next = recordEvent(reopened, "collector", playerMessage("after restart"));
+  const next = recordEvent(reopened, "collector", gameplayEvent("after restart"));
   assert.equal(next.eventId, 2, "event ids continue rather than restart");
   assert.deepEqual(readNotificationSummary(reopened, "collector").recentPreview, ["after restart"]);
   reopened.close();

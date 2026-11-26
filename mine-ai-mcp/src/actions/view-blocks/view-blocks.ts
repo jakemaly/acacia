@@ -11,7 +11,7 @@
  */
 import type { Bot } from "mineflayer";
 import { Vec3 } from "vec3";
-import { findLoadedBlockPositions, isLiquid } from "../../world/index.js";
+import { summarizeLoadedBlocks, isLiquid } from "../../world/index.js";
 import { defineAction } from "../action.js";
 import { blockMatchesSelector } from "../collect-block/collection-facts.js";
 import {
@@ -59,25 +59,24 @@ function selectedStateIds(bot: Bot, name: string): Set<number> {
   return stateIds;
 }
 
-function find(
+async function find(
   bot: Bot,
   feet: Vec3,
   request: NonNullable<ViewBlocksRequest["find"]>,
-): { found: NonNullable<ViewBlocksReport["find"]> } | { unknown: string } {
+  signal?: AbortSignal,
+): Promise<{ found: NonNullable<ViewBlocksReport["find"]> } | { unknown: string }> {
   const found: NonNullable<ViewBlocksReport["find"]> = [];
   for (const name of request.blockNames) {
     const stateIds = selectedStateIds(bot, name);
     if (stateIds.size === 0) return { unknown: name };
-    // The scan is nearest first and cheap: it reads packed state IDs, so the
-    // count of everything loaded costs no more than the few that are listed.
-    const positions = findLoadedBlockPositions(bot, { center: feet, stateIds, limit: Number.POSITIVE_INFINITY });
-    const listed: FoundBlock[] = positions.slice(0, request.limit).map((position) => ({
+    const { count, positions } = await summarizeLoadedBlocks(bot, { center: feet, stateIds, limit: request.limit }, signal);
+    const listed: FoundBlock[] = positions.map((position) => ({
       ...observe(bot, position),
       distance: Math.round(position.distanceTo(feet) * 10) / 10,
       above: nameAt(bot, position.offset(0, 1, 0)),
       below: nameAt(bot, position.offset(0, -1, 0)),
     }));
-    found.push({ name, found: positions.length, listed });
+    found.push({ name, found: count, listed });
   }
   return { found };
 }
@@ -103,7 +102,7 @@ function box(bot: Bot, request: NonNullable<ViewBlocksRequest["box"]>): NonNulla
   };
 }
 
-export function viewBlocks(bot: Bot, request: ViewBlocksRequest): ViewBlocksResult {
+export async function viewBlocks(bot: Bot, request: ViewBlocksRequest, signal?: AbortSignal): Promise<ViewBlocksResult> {
   const feet = bot.entity.position.floored();
   const report: ViewBlocksReport = {
     dimension: bot.game.dimension,
@@ -114,7 +113,7 @@ export function viewBlocks(bot: Bot, request: ViewBlocksRequest): ViewBlocksResu
     cells: request.cells.map((cell) => observe(bot, new Vec3(cell.x, cell.y, cell.z))),
   };
   if (request.find) {
-    const result = find(bot, feet, request.find);
+    const result = await find(bot, feet, request.find, signal);
     if ("unknown" in result) {
       return { status: "failed", error: viewBlocksOutcomes.unknownBlock(result.unknown), blocks: report };
     }
@@ -206,6 +205,6 @@ export function createViewBlocksAction(bot: Bot) {
     execution: { kind: "information" },
     annotations: { openWorldHint: false },
     parse: parseViewBlocksRequest,
-    execute: async (request) => viewBlocks(bot, request),
+    execute: async (request, context) => viewBlocks(bot, request, context.signal),
   });
 }

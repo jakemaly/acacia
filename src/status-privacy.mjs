@@ -1,5 +1,5 @@
 const OMIT = Symbol('omit');
-const playerListKeys = new Set(['players', 'onlineplayers', 'connectedplayers', 'nearbyplayers']);
+const playerListKeys = new Set(['players', 'otherplayers', 'onlineplayers', 'connectedplayers', 'nearbyplayers', 'collectedbyother']);
 const playerListLine = /^\s*(?:[-*]\s*)?(?:(?:online|nearby|other|connected|active|visible)\s+)?players\b[^:]*:/i;
 const playerListHeading = /^\s*#{1,6}\s+(?:(?:nearby|other)\s+)?players\b/i;
 
@@ -15,13 +15,20 @@ function filterStatusText(text) {
 
   const lines = [];
   let skippingPlayerSection = false;
+  let skippingPlayerList = false;
   for (const line of text.split(/\r?\n/)) {
     if (playerListHeading.test(line)) {
       skippingPlayerSection = true;
       continue;
     }
     if (skippingPlayerSection && /^\s*#{1,6}\s+/.test(line)) skippingPlayerSection = false;
-    if (skippingPlayerSection || playerListLine.test(line)) continue;
+    if (skippingPlayerSection) continue;
+    if (skippingPlayerList && /^\s{2,}[-*]\s/.test(line)) continue;
+    skippingPlayerList = false;
+    if (playerListLine.test(line)) {
+      skippingPlayerList = /:\s*$/.test(line);
+      continue;
+    }
     lines.push(line);
   }
   return lines.join('\n');

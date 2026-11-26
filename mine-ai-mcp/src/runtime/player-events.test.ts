@@ -11,67 +11,15 @@ function playerBot(username = "MineAI"): Bot {
   return botFixture({ username, position: { x: 12.5, y: 64, z: -3.25 } });
 }
 
-test("records incoming and outgoing player messages while notifying only for incoming ones", (t) => {
+test("incoming chat and whispers do not enter the agent's event stream", (t) => {
   const bot = playerBot();
   const data = temporaryBotData({ botId: bot.username, closeAfter: t });
-  const stopObserving = observePlayerEvents(bot, data, () => undefined);
-  t.after(stopObserving);
-
-  bot.emit("chat", "Alex", "MineAI, can you bring wood?", null, {} as never, null);
-  bot.emit("chat", "MineAI", "Yes, I can.", null, {} as never, null);
-  bot.emit("whisper", "Steve", "meet me at spawn", null, {} as never, null);
-
-  assert.deepEqual(readNotificationSummary(data, bot.username), {
-    unreadCount: 2,
-    recentPreview: ["Alex: MineAI, can you bring wood?", "Steve: meet me at spawn"],
-    hint: "Use read_recent_events to read and advance through recent events.",
-  });
-
-  const result = readRecentEvents(data, bot.username, 50);
-  assert.deepEqual(
-    result.events.map(({ summary, payload }) => ({ summary, payload })),
-    [
-      {
-        summary: "Alex: MineAI, can you bring wood?",
-        payload: {
-          username: "Alex",
-          channel: "chat",
-          direction: "incoming",
-          message: "MineAI, can you bring wood?",
-          addressed: true,
-        },
-      },
-      {
-        summary: "MineAI: Yes, I can.",
-        payload: {
-          username: "MineAI",
-          channel: "chat",
-          direction: "outgoing",
-          message: "Yes, I can.",
-          addressed: false,
-        },
-      },
-      {
-        summary: "Steve: meet me at spawn",
-        payload: {
-          username: "Steve",
-          channel: "whisper",
-          direction: "incoming",
-          message: "meet me at spawn",
-          addressed: false,
-        },
-      },
-    ],
-  );
+  const stop = observePlayerEvents(bot, data, () => undefined);
+  t.after(stop);
+  bot.emit("chat", "aycelol", "private spectator message", null, {} as never, null);
+  bot.emit("whisper", "OtherPlayer", "private whisper", null, {} as never, null);
   assert.deepEqual(readNotificationSummary(data, bot.username), { unreadCount: 0 });
-
-  stopObserving();
-  stopObserving();
-  assert.equal(bot.listenerCount("chat"), 0);
-  assert.equal(bot.listenerCount("whisper"), 0);
-  assert.equal(bot.listenerCount("death"), 0);
-  bot.emit("chat", "Alex", "after close", null, {} as never, null);
-  assert.equal(readRecentEvents(data, bot.username, 50).events.length, 0);
+  assert.deepEqual(readRecentEvents(data, bot.username, 50).events, []);
 });
 
 test("death requests cancellation once, records one event, and detaches without touching other listeners", (t) => {
@@ -96,7 +44,7 @@ test("death requests cancellation once, records one event, and detaches without 
   assert.equal(unrelatedDeaths, 1);
   assert.deepEqual(readNotificationSummary(data, bot.username), {
     unreadCount: 1,
-    recentPreview: ["RuntimeBot died at 12.5, 64, -3.25 in ov..."],
+    recentPreview: ["The bot died; read recent events for its..."],
     hint: "Use read_recent_events to read and advance through recent events.",
   });
   const page = readRecentEvents(data, bot.username, 50);

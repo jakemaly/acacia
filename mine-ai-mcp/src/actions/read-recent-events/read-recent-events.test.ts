@@ -17,107 +17,45 @@ function playerMessage(
   };
 }
 
-test("formats incoming and outgoing message evidence", (t) => {
+function gameplayEvent(summary: string): BotEventInput {
+  return { type: "player_dimension_change", observedAt: "2026-08-23T00:00:00.000Z", summary,
+    payload: { from: "overworld", to: "the_nether", position: { x: 0, y: 64, z: 0 } } };
+}
+
+test("legacy chat is hidden while gameplay events remain readable", (t) => {
   assert.deepEqual(parseReadRecentEventsRequest(undefined), { limit: 50 });
   assert.deepEqual(parseReadRecentEventsRequest({ limit: 2 }), { limit: 2 });
   assert.throws(() => parseReadRecentEventsRequest({ limit: 0 }));
   assert.throws(() => parseReadRecentEventsRequest({ limit: 101 }));
-
   const data = temporaryBotData({ closeAfter: t });
-  recordEvent(data, "MineAI", playerMessage("Can you bring wood?"));
-  recordEvent(data, "MineAI", playerMessage("Yes, I can.", "MineAI", "outgoing"));
-
-  // Which events a page holds and how the cursor moves is the next test's;
-  // this one is what the model is shown of them.
+  recordEvent(data, "MineAI", playerMessage("private", "aycelol"));
+  recordEvent(data, "MineAI", gameplayEvent("arrived"));
   const result = readRecentBotEvents(data, "MineAI", { limit: 50 });
   assert.equal(result.status, "succeeded");
-  const markdown = formatReadRecentEventsResult(result);
-  assert.match(markdown, /Event 1: player message/);
-  assert.match(markdown, /Can you bring wood\?/);
-  assert.match(markdown, /Direction: outgoing/);
-  assert.match(markdown, /Remaining events:\*\* 0/);
+  assert.deepEqual(result.events.map((event) => event.summary), ["arrived"]);
+  assert.doesNotMatch(JSON.stringify(result), /private|aycelol/);
+  assert.match(formatReadRecentEventsResult(result), /dimension change/);
 });
 
-test("reads all event directions oldest-first and advances the cursor atomically", (t) => {
+test("gameplay pages skip legacy chat and advance the cursor atomically", (t) => {
   const data = temporaryBotData({ closeAfter: t });
-  recordEvent(data, "collector", playerMessage("first"));
-  recordEvent(data, "collector", playerMessage("collector replied", "collector", "outgoing"));
-  recordEvent(data, "collector", playerMessage("third"));
-
-  assert.deepEqual(readRecentEvents(data, "collector", 2), {
-    events: [
-      {
-        eventId: 1,
-        botId: "collector",
-        type: "player_message",
-        observedAt: "2026-08-23T00:00:00.000Z",
-        summary: "first",
-        payload: {
-          username: "Alex",
-          channel: "chat",
-          direction: "incoming",
-          message: "first",
-          addressed: false,
-        },
-      },
-      {
-        eventId: 2,
-        botId: "collector",
-        type: "player_message",
-        observedAt: "2026-08-23T00:00:00.000Z",
-        summary: "collector replied",
-        payload: {
-          username: "collector",
-          channel: "chat",
-          direction: "outgoing",
-          message: "collector replied",
-          addressed: false,
-        },
-      },
-    ],
-    readThroughEventId: 2,
-    remainingEventCount: 1,
-  });
+  recordEvent(data, "collector", playerMessage("private", "aycelol"));
+  recordEvent(data, "collector", gameplayEvent("first"));
+  recordEvent(data, "collector", gameplayEvent("second"));
+  recordEvent(data, "collector", gameplayEvent("third"));
+  const first = readRecentEvents(data, "collector", 2);
+  assert.deepEqual(first.events.map((event) => event.summary), ["first", "second"]);
+  assert.equal(first.readThroughEventId, 3);
+  assert.equal(first.remainingEventCount, 1);
   assert.deepEqual(readNotificationSummary(data, "collector").recentPreview, ["third"]);
-
-  data.transaction((database) => {
-    database.exec(`
-      CREATE TRIGGER refuse_event_cursor
-      BEFORE UPDATE ON event_read_state
-      BEGIN
-        SELECT RAISE(ABORT, 'cursor refused');
-      END
-    `);
-  });
+  data.transaction((database) => database.exec(`CREATE TRIGGER refuse_event_cursor BEFORE UPDATE ON event_read_state BEGIN SELECT RAISE(ABORT, 'cursor refused'); END`));
   assert.throws(() => readRecentEvents(data, "collector", 1), /cursor refused/);
   assert.deepEqual(readNotificationSummary(data, "collector").recentPreview, ["third"]);
-
   data.transaction((database) => database.exec("DROP TRIGGER refuse_event_cursor"));
-  assert.deepEqual(readRecentEvents(data, "collector", 100), {
-    events: [
-      {
-        eventId: 3,
-        botId: "collector",
-        type: "player_message",
-        observedAt: "2026-08-23T00:00:00.000Z",
-        summary: "third",
-        payload: {
-          username: "Alex",
-          channel: "chat",
-          direction: "incoming",
-          message: "third",
-          addressed: false,
-        },
-      },
-    ],
-    readThroughEventId: 3,
-    remainingEventCount: 0,
-  });
-  assert.deepEqual(readRecentEvents(data, "collector", 100), {
-    events: [],
-    readThroughEventId: 3,
-    remainingEventCount: 0,
-  });
+  const last = readRecentEvents(data, "collector", 100);
+  assert.deepEqual(last.events.map((event) => event.summary), ["third"]);
+  assert.equal(last.readThroughEventId, 4);
+  assert.equal(last.remainingEventCount, 0);
   assert.deepEqual(readNotificationSummary(data, "collector"), { unreadCount: 0 });
 });
 

@@ -1,6 +1,5 @@
 import { dropCheckpointSchema } from "../checkpoint-schemas.js";
 import type { Bot } from "mineflayer";
-import type { Entity } from "prismarine-entity";
 import type { Item } from "prismarine-item";
 import type { Vec3 } from "vec3";
 import type { BreakBlockInPlace } from "../../navigation/execution/in-place-break.js";
@@ -8,7 +7,6 @@ import {
   createMovements,
   customGoal,
   HORIZONTAL_TICKS_PER_BLOCK,
-  nearEntityGoal,
   type Navigate,
   type NavigationRuntime,
 } from "../../navigation/index.js";
@@ -29,7 +27,6 @@ import {
   dropItemResultSchema,
   type DropItemEvidence,
   type DroppedItem,
-  type DropRecipient,
   type DropItemRequest,
   type DropItemResult,
   type HoleClosure,
@@ -54,9 +51,6 @@ import { droppedItemName, snapshotEntityIds } from "../../world/dropped-items.js
  */
 const TOSS_SETTLE_MS = 1_500;
 
-/** How close the bot gets before handing items over. Within this, a toss lands at their feet. */
-const HANDOVER_RANGE = 2;
-
 /** A tossed item lands within a couple of blocks; anything further appeared for another reason. */
 const DISCARD_ATTRIBUTION_RADIUS = 4;
 
@@ -69,7 +63,7 @@ const DISCARD_ATTRIBUTION_RADIUS = 4;
 const HOLE_CLEARANCE = 3;
 
 /**
- * The engine a drop drives: the route to a hole or a player, the in-place
+ * The engine a drop drives: the route away from a hole, the in-place
  * break that digs the hole, and the placement that seals it. Tests replace
  * them with fakes that change the world, so the drop's own decisions are
  * proven without a server.
@@ -178,48 +172,6 @@ async function tossItem(
       };
 }
 
-class DropItemActionError extends Error {}
-
-/** Walk to the named player and face them, so a toss lands at their feet rather than ours. */
-async function approachPlayer(
-  bot: Bot,
-  name: string,
-  dependencies: DropItemDependencies,
-  context: ActionContext,
-): Promise<DropRecipient> {
-  const entity: Entity | undefined = bot.players[name]?.entity;
-  if (!entity) throw new DropItemActionError(dropItemOutcomes.playerNotFound(name));
-
-  if (bot.entity.position.distanceTo(entity.position) > HANDOVER_RANGE) {
-    const route = await dependencies
-      .navigate({
-        movements: createMovements(bot),
-        goal: nearEntityGoal({ id: entity.id }, HANDOVER_RANGE),
-        signal: context.signal,
-      })
-      .catch((cause: unknown) => {
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new DropItemActionError(dropItemOutcomes.playerUnreachable(name, reason), { cause });
-      });
-
-    // The goal tracks a live entity, so a player who walks off invalidates it.
-    const arrived = bot.players[name]?.entity;
-    if (!arrived) throw new DropItemActionError(dropItemOutcomes.playerLeft(name));
-    if (bot.entity.position.distanceTo(arrived.position) > HANDOVER_RANGE) {
-      throw new DropItemActionError(dropItemOutcomes.playerUnreachable(name, describeNavigation(route)));
-    }
-  }
-
-  const target = bot.players[name]?.entity;
-  if (!target) throw new DropItemActionError(dropItemOutcomes.playerLeft(name));
-  await bot.lookAt(target.position);
-  return {
-    name,
-    distance: Number(bot.entity.position.distanceTo(target.position).toFixed(2)),
-    position: { x: target.position.x, y: target.position.y, z: target.position.z },
-  };
-}
-
 /**
  * Mark the items this toss created so no sweep picks them straight back up.
  *
@@ -313,25 +265,20 @@ export async function dropItem(
     checkpoint: { phase: "disposing", freeSlots: bot.inventory.emptySlotCount(), items: progressItems.map((item) => ({
       ...item, current: carriedCount(bot, item.item), removed: item.before - carriedCount(bot, item.item),
     })) },
-    completion: { kind: "event", observed: false, owes: "Requested items removed and destination delivery or disposal cleanup confirmed." },
+    completion: { kind: "event", observed: false, owes: "Requested items removed and disposal outcome confirmed." },
   }));
   const entityBaseline = snapshotEntityIds(bot);
   // Digging may select a shovel or pickaxe. Protection refers to the caller's
   // held item, not the tool the hole preparation temporarily selected.
   const heldName = bot.heldItem?.name;
 
-  let recipient: DropRecipient | null = null;
   let hole: Vec3 | null = null;
-  if (request.destination.kind !== "ground") {
+  if (request.destination.kind === "hole") {
     try {
-      if (request.destination.kind === "player") {
-        recipient = await approachPlayer(bot, request.destination.name, dependencies, context);
-      } else {
-        hole = await prepareDisposalHole(bot, createMovements(bot), dependencies.breakInPlace, context);
-      }
+      hole = await prepareDisposalHole(bot, createMovements(bot), dependencies.breakInPlace, context);
     } catch (cause) {
       context.signal?.throwIfAborted();
-      if (!(cause instanceof DropItemActionError) && !(cause instanceof DisposalHoleError)) throw cause;
+      if (!(cause instanceof DisposalHoleError)) throw cause;
       return {
         status: "failed",
         error: cause.message,
@@ -402,7 +349,7 @@ export async function dropItem(
     freeSlotsBefore,
     freeSlotsAfter,
     droppedAt,
-    recipient,
+    recipient: null,
     hole,
     holeClosure,
   };

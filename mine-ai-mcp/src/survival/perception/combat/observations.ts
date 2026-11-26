@@ -9,6 +9,7 @@ import { isCreeper, CreeperClearance } from "./creepers.js";
 import { canBeBystander, isHostile } from "./threats.js";
 import { trackArrowFlights } from "./arrow-flight.js";
 import { bowDrawHeldOnBot, bowReleaseInTicks, trackBowDraws } from "./bow-timing.js";
+import { trackMountedEntities } from "../../../world/mounted-entities.js";
 type Entity = Parameters<Bot["attack"]>[0];
 const RANGED_SPECIES = new Set(["blaze"]);
 const BLAZE_CHARGING_FLAG = 1;
@@ -161,6 +162,8 @@ export class CombatPerception implements Disposable {
   get tick(): number { return this.#tick; }
   readonly resolvedIds = new Set<number>();
   readonly attackerIds = new Set<number>();
+  readonly #recentAttacks = new Map<number, { tick: number; sequence: number }>();
+  #attackSequence = 0;
   readonly #owners = new Map<number, number>();
   readonly #lastSeen = new Map<number, number>();
   readonly #lastShot = new Map<number, number>();
@@ -171,6 +174,7 @@ export class CombatPerception implements Disposable {
   readonly #listeners = new DisposableStack();
 
   constructor(readonly bot: Bot) {
+    this.#listeners.use(trackMountedEntities(bot));
     this.creeperClearance = new CreeperClearance(bot);
     const invalidate = () => {
       this.#snapshot = null;
@@ -186,7 +190,10 @@ export class CombatPerception implements Disposable {
     };
     const hurt: BotEvents["entityHurt"] = (entity, source) => {
       if (isHostile(source)) {
-        if (entity.id === bot.entity.id) this.attackerIds.add(source.id);
+        if (entity.id === bot.entity.id) {
+          this.attackerIds.add(source.id);
+          this.#recentAttacks.set(source.id, { tick: this.#tick, sequence: ++this.#attackSequence });
+        }
         // Neutral Endermen can switch to the dragon or another victim. Their
         // anger flag cannot keep an old bot-target attribution alive.
         else if (source.name === "enderman") this.attackerIds.delete(source.id);
@@ -195,6 +202,7 @@ export class CombatPerception implements Disposable {
     };
     const gone: BotEvents["entityGone"] = (entity) => {
       for (const set of [this.resolvedIds, this.attackerIds]) set.delete(entity.id);
+      this.#recentAttacks.delete(entity.id);
       this.#owners.delete(entity.id);
       this.#lastSeen.delete(entity.id);
       this.#lastShot.delete(entity.id);
@@ -203,6 +211,7 @@ export class CombatPerception implements Disposable {
     };
     const dead: BotEvents["entityDead"] = (entity) => {
       this.resolvedIds.add(entity.id);
+      this.#recentAttacks.delete(entity.id);
       this.creeperClearance.resolve(entity.id);
       invalidate();
     };
@@ -230,7 +239,7 @@ export class CombatPerception implements Disposable {
     const explosion = (packet: unknown) => this.creeperClearance.exploded(packet, this.#tick);
     bot._client.on("explosion", explosion);
     this.#listeners.defer(() => bot._client.off("explosion", explosion));
-    const respawn = () => this.creeperClearance.reset();
+    const respawn = () => { this.creeperClearance.reset(); this.#recentAttacks.clear(); };
     bot.on("respawn", respawn);
     this.#listeners.defer(() => bot.off("respawn", respawn));
     bot._client.on("spawn_entity", shot);
@@ -241,6 +250,12 @@ export class CombatPerception implements Disposable {
 
   incoming(): readonly Entity[] {
     return (this.#incoming ??= incomingBlazeProjectiles(this.bot));
+  }
+
+  /** Recent hits are fresh evidence; old attackers alone must not hold a reflex open. */
+  recentAttack(id: number): number | null {
+    const hit = this.#recentAttacks.get(id);
+    return hit && this.#tick - hit.tick <= 40 ? hit.sequence : null;
   }
 
   private firstShotInTicks(entity: Entity): number | null {

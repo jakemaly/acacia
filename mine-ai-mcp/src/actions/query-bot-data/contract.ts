@@ -8,7 +8,7 @@ export const QUERY_BOT_DATA_MAX_ROWS = 100;
 export const QUERY_BOT_DATA_MAX_RESULT_BYTES = 64 * 1024;
 export const QUERY_BOT_DATA_DESCRIPTION =
   "Query the bot's read-only SQLite data for its current status, remembered Minecraft world, durable event history, and connected game version. " +
-  "Use it for position and vitals; observed chunks, container contents and locations, biomes, materials, water coverage, and frontier navigation; recorded player messages; or version-correct registry facts such as blocks, items, recipes, and entity types. " +
+  "Use it for position and vitals; observed chunks, container contents and locations, biomes, materials, water coverage, and frontier navigation; or version-correct registry facts such as blocks, items, recipes, and entity types. Raw chat and action-history tables are private. " +
   "Query data_dictionary first when the schema is unknown; inspect knowledge.action_queries when another action references query IDs. " +
   "Keep queries focused and refine any truncated result.";
 

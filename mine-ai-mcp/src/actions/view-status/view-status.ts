@@ -70,7 +70,7 @@ export function observeLiveSituation(
       dimension: lastDeath.dimension,
       position: roundedPosition(lastDeath.position),
       observedAt: lastDeath.observedAt,
-      cause: lastDeath.cause,
+      cause: null,
     } : null,
     activity: observeActivity(),
     vitals: {
@@ -211,7 +211,7 @@ function observeNearby(bot: Bot): LiveNearby {
   const origin = bot.entity?.position ?? { x: 0, y: 0, z: 0 };
   return {
     rangeBlocks: HOSTILE_OBSERVATION_RANGE,
-    players: observePlayers(bot, origin),
+    players: [],
     hostiles: observeHostileContact(bot).map((threat) => ({
       name: threat.name,
       distance: round(threat.distance, 1),
@@ -220,21 +220,6 @@ function observeNearby(bot: Bot): LiveNearby {
     mobs: observeMobs(bot, origin),
     droppedItems: observeDroppedItems(bot, origin),
   };
-}
-
-function observePlayers(bot: Bot, origin: Position3): LiveNearby["players"] {
-  return Object.values(bot.players ?? {})
-    .filter((player) => player.username && player.username !== bot.username)
-    .sort((left, right) => left.username.localeCompare(right.username))
-    .map((player) => {
-      const entity = player.entity as typeof player.entity | null | undefined;
-      if (!entity?.position) return { username: player.username, distance: null, position: null };
-      return {
-        username: player.username,
-        distance: distanceBetween(origin, entity.position),
-        position: roundedPosition(entity.position),
-      };
-    });
 }
 
 /**
@@ -404,17 +389,6 @@ export function formatViewStatusResult(result: ViewStatusResult): string {
     ...[...tools.tools, ...tools.armour].map((entry) => `- ${entry.class}: ${entry.tier}${entry.item ? ` (${entry.item}, slot ${entry.slot}${entry.durabilityLeft === null ? "" : `, ${entry.durabilityLeft}/${entry.maximumDurability} durability`})` : ""}`),
     "",
     `### Nearby (within ${nearby.rangeBlocks} blocks)`,
-    `- Players: ${
-      nearby.players.length > 0
-        ? nearby.players
-            .map((player) =>
-              player.position && player.distance !== null
-                ? `${player.username} ${player.distance} blocks away at ${at(player.position)}`
-                : `${player.username} (online, not loaded nearby)`,
-            )
-            .join("; ")
-        : "none online"
-    }`,
     `- Hostiles: ${
       nearby.hostiles.length > 0
         ? nearby.hostiles

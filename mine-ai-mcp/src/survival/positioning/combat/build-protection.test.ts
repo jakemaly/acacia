@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Vec3 } from "vec3";
 import { botFixture } from "../../../test-support/bot.js";
+import { answerBlocks } from "../../../test-support/world.js";
 import { buildProtection } from "./build-protection.js";
 
 type Block = NonNullable<ReturnType<Bot["blockAt"]>>;
@@ -67,4 +68,55 @@ test("with digging prohibited the vine cell is refused, not placed into", async 
   });
   assert.equal(built.kind, "blocked");
   assert.match(built.kind === "blocked" ? built.reason : "", /twisting_vines, which could not be punched out/);
+});
+
+test("a shelter can clear a fast-to-mine stair obstructing its wall", async () => {
+  const cell = new Vec3(0, 64, 1);
+  const bot = botFixture({ items: [{ name: "cobblestone", count: 32 }, { name: "iron_pickaxe", count: 1 }] });
+  let stair = true;
+  answerBlocks(bot, (at) => at.equals(cell) && stair ? "waxed_oxidized_cut_copper_stairs" : at.y === 63 ? "stone" : "air");
+  bot.canDigBlock = () => true;
+  bot.dig = (async () => { stair = false; }) as Bot["dig"];
+  bot.equip = async (item) => {
+    if (typeof item !== "number" && item.name === "cobblestone") throw new Error("placement reached");
+  };
+  const result = await buildProtection(bot, [cell], {
+    signal: new AbortController().signal,
+    mayContinue: () => null,
+    terrain: { dig: true, place: true },
+    clearStairs: true,
+  });
+  assert.equal(stair, false);
+  assert.equal(result.kind, "blocked");
+  assert.match(result.kind === "blocked" ? result.reason : "", /placement reached/);
+});
+
+test("a shelter never clears stairs beside lava", async () => {
+  const cell = new Vec3(0, 64, 1);
+  const bot = botFixture({ items: [{ name: "cobblestone", count: 32 }, { name: "iron_pickaxe", count: 1 }] });
+  answerBlocks(bot, (at) => at.equals(cell) ? "waxed_oxidized_cut_copper_stairs" : at.equals(cell.offset(1, 0, 0)) ? "lava" : at.y === 63 ? "stone" : "air");
+  bot.canDigBlock = () => true;
+  bot.dig = (async () => assert.fail("digging would release lava")) as Bot["dig"];
+  const result = await buildProtection(bot, [cell], {
+    signal: new AbortController().signal,
+    mayContinue: () => null,
+    terrain: { dig: true, place: true },
+    clearStairs: true,
+  });
+  assert.equal(result.kind, "blocked");
+});
+
+test("a shelter respects a ban on digging when stairs obstruct a wall", async () => {
+  const cell = new Vec3(0, 64, 1);
+  const bot = botFixture({ items: [{ name: "cobblestone", count: 32 }, { name: "iron_pickaxe", count: 1 }] });
+  answerBlocks(bot, (at) => at.equals(cell) ? "waxed_oxidized_cut_copper_stairs" : at.y === 63 ? "stone" : "air");
+  bot.canDigBlock = () => true;
+  bot.dig = (async () => assert.fail("digging is prohibited")) as Bot["dig"];
+  const result = await buildProtection(bot, [cell], {
+    signal: new AbortController().signal,
+    mayContinue: () => null,
+    terrain: { dig: false, place: true },
+    clearStairs: true,
+  });
+  assert.equal(result.kind, "blocked");
 });

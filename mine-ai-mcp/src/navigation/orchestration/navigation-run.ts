@@ -37,6 +37,7 @@
  * listener, and the continuation search before `execute` measures what was
  * left behind rather than asserting zero.
  */
+import { synchronousDiagnostic } from "../../execution/synchronous-diagnostic.js";
 import type { NavigationCalculationFailure, NavigationEvidence, NavigationFailure, NavigationOutcome, NavigationSettlement, SearchReason } from "../outcome.js";
 import { executeWorldEffect } from "../execution/world-effect.js";
 import { OpenedPassages } from "../execution/opened-passages.js";
@@ -703,7 +704,7 @@ export class NavigationRun {
         search.cancel();
         return { kind: "planning_stalled", failure: stall };
       }
-      const update = search.advance();
+      const update = synchronousDiagnostic("navigation", `search_slice:${searchId}`, () => search.advance());
       if (update.kind !== "progress")
         this.#events.emit({
           kind: "search_finished",

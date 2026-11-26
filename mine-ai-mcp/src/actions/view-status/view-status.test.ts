@@ -80,6 +80,13 @@ function liveBot(): Bot {
   );
 }
 
+test("status does not expose online player identities", (t) => {
+  const bot = liveBot();
+  const situation = observeLiveSituation(bot, temporaryBotData({ botId: "TestBot", closeAfter: t }), idleActivity);
+  assert.deepEqual(situation.nearby.players, []);
+  assert.doesNotMatch(JSON.stringify(situation), /Scout|Faraway/);
+});
+
 test("reports the observed clock without predicting daylight outside the Overworld", (t) => {
   // Servers may supply a custom dimension beyond Mineflayer's built-in union.
   for (const dimension of ["the_nether", "the_end", "custom_dimension"]) {
@@ -156,10 +163,7 @@ test("reports vitals, the clock, position, inventory, and loaded neighbours from
   // slime sixty blocks off is loaded but outside the sixteen-block hostile range.
   assert.deepEqual(situation.nearby, {
     rangeBlocks: 16,
-    players: [
-      { username: "Faraway", distance: null, position: null },
-      { username: "Scout", distance: 5.3, position: { x: -12, y: 99, z: 14 } },
-    ],
+    players: [],
     hostiles: [{ name: "zombie", distance: 5, position: { x: -4.5, y: 99, z: 18.68 } }],
     mobs: [
       {
@@ -271,7 +275,7 @@ test("renders one compact Markdown situation report", async (t) => {
   assert.match(markdown, /- Held: stone_pickaxe x1/);
   assert.match(markdown, /- Worn: head diamond_helmet, off-hand shield/);
   assert.match(markdown, /- cobblestone x76 \(slots 9, 10\)/);
-  assert.match(markdown, /- Players: Faraway \(online, not loaded nearby\); Scout 5\.3 blocks away at `-12, 99, 14`/);
+  assert.doesNotMatch(markdown, /Faraway|Scout/);
   assert.match(markdown, /- Hostiles: zombie 5 blocks away/);
   assert.match(markdown, /- Loaded mobs \(every loaded chunk, any distance\):\n/);
   assert.match(markdown, /\n {2}- cow \(animal, adult\) x2, nearest #4 1\.6 at `-8, 99, 18`\n/);
@@ -391,7 +395,7 @@ test("status exposes the retained death after the live position has changed", (t
 
   assert.deepEqual(situation.lastDeath, {
     dimension: "overworld", position: { x: 4.5, y: 63, z: -9.5 },
-    observedAt: "2026-09-13T09:00:00.000Z", cause: "fell from a high place",
+    observedAt: "2026-09-13T09:00:00.000Z", cause: null,
   });
   assert.match(formatViewStatusResult({ status: "succeeded", situation }), /Last death: `4.5, 63, -9.5`/);
 });

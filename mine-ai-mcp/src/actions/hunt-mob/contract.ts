@@ -100,9 +100,10 @@ export const huntDropSightingSchema = z.strictObject({
   observedAt: z.string().datetime(),
   firstSeen: z.enum(["already_loaded", "during_hunt"]),
   state: z.enum(["loaded", "no_longer_observed"]),
-  /** A collection event identifies the collector; inventory gain remains the hunt's success proof. */
+  /** Inventory gain remains the hunt's success proof. */
   collectedByBot: z.boolean(),
-  collectedByOther: z.boolean(),
+  // Older saved results may contain this; current results omit it.
+  collectedByOther: z.boolean().optional(),
 });
 export type HuntDropSighting = z.output<typeof huntDropSightingSchema>;
 

@@ -743,7 +743,6 @@ test("the report rounds leftover drop positions and counts quarry beyond the nea
           firstSeen: "during_hunt",
           state: "loaded",
           collectedByBot: false,
-          collectedByOther: false,
         },
       ],
       targets,

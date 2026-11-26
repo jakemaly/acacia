@@ -191,7 +191,7 @@ export const ACTION_CATALOG: readonly CatalogEntry[] = Object.freeze([
   entry(NAVIGATE, NAVIGATE_DESCRIPTION, navigateInputSchema, (d) => createNavigateAction(d.bot, d.navigation)),
   entry(NOTE_SAVE, NOTE_SAVE_DESCRIPTION, noteSaveInputSchema, (d) => createNoteSaveAction(d.bot, d.botData)),
   entry(NOTE_READ, NOTE_READ_DESCRIPTION, noteReadInputSchema,
-    (d) => createNoteReadAction(d.botData, d.bot.username), observer),
+    (d) => createNoteReadAction(d.botData, d.bot.username, { hideExisting: true }), observer),
   entry(PLACE_BLOCK, PLACE_BLOCK_DESCRIPTION, placeBlockInputSchema, (d) => createPlaceBlockAction(d.bot, d.navigation)),
   entry(PREPARE_DRAGON_PERCH, PREPARE_DRAGON_PERCH_DESCRIPTION, prepareDragonPerchInputSchema,
     (d) => createPrepareDragonPerchAction(d.bot, d.combat)),

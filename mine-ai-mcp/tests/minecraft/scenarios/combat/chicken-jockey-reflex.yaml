@@ -1,0 +1,46 @@
+template: ../../templates/combat-idle-midnight.yaml
+
+tags: [acceptance, regression]
+description: >-
+  A baby zombie riding a chicken approaches an idle bot. The reflex must
+  track the rider as the chicken moves and defeat it. A second bot faces an
+  ordinary baby zombie as a control.
+
+entities:
+  - type: chicken
+    pos: [12.5, -60, 0.5]
+    nbt: '{PersistenceRequired:1b,Passengers:[{id:"minecraft:zombie",IsBaby:1b,PersistenceRequired:1b,Tags:["jockey"]}]}'
+  - type: zombie
+    pos: [112.5, -60, 0.5]
+    nbt: '{IsBaby:1b,PersistenceRequired:1b,Tags:["ordinary"]}'
+
+players:
+  - name: RiderBot
+    pos: [0.5, -60, 0.5]
+    equipment: { head: iron_helmet, chest: iron_chestplate, legs: iron_leggings, feet: iron_boots }
+    inventory:
+      - { item: iron_sword, count: 1 }
+      - { item: shield, count: 1 }
+  - name: ControlBot
+    pos: [100.5, -60, 0.5]
+    equipment: { head: iron_helmet, chest: iron_chestplate, legs: iron_leggings, feet: iron_boots }
+    inventory:
+      - { item: iron_sword, count: 1 }
+      - { item: shield, count: 1 }
+
+params:
+  waitTicks: 800
+
+tick:
+  - "gamemode spectator @a[name=!RiderBot,name=!ControlBot,gamemode=!spectator]"
+
+goal:
+  kind: all
+  timeout: 100
+  goals:
+    - { kind: kill, who: RiderBot, target: zombie, tag: jockey }
+    - { kind: survive, who: RiderBot, seconds: 1 }
+    - { kind: completion, who: RiderBot }
+    - { kind: kill, who: ControlBot, target: zombie, tag: ordinary }
+    - { kind: survive, who: ControlBot, seconds: 1 }
+    - { kind: completion, who: ControlBot }

@@ -112,3 +112,20 @@ test("Enderman attack attribution follows the observed victim, not its anger fla
     "an observed attack on someone else retires its bot-target attribution",
   );
 });
+
+test("recent attack evidence expires and a new hit receives a new identity", () => {
+  const source = { id: 2, name: "zombie", kind: "Hostile mobs", isValid: true };
+  const bot = Object.assign(new EventEmitter(), {
+    game: { dimension: "overworld" }, entity: { id: 1 }, entities: { 2: source }, _client: new EventEmitter(),
+  }) as unknown as Bot;
+  using perception = new CombatPerception(bot);
+  bot.emit("entityHurt", bot.entity, bot.entities[2]!);
+  const first = perception.recentAttack(2);
+  assert.notEqual(first, null);
+  for (let i = 0; i < 41; i++) bot.emit("physicsTick");
+  assert.equal(perception.recentAttack(2), null);
+  bot.emit("entityHurt", bot.entity, bot.entities[2]!);
+  assert.notEqual(perception.recentAttack(2), first);
+  bot.emit("entityGone", bot.entities[2]!);
+  assert.equal(perception.recentAttack(2), null);
+});

@@ -1,0 +1,59 @@
+template: ../../templates/combat-idle-midnight.yaml
+
+tags: [regression]
+description: >-
+  A wounded bot takes shelter on a bedrock floor with copper stairs occupying
+  its wall cells, as in Modal death 6e4e4169000f. An inert skeleton triggers
+  the shelter without making the construction test depend on arrow timing.
+
+world:
+  type: flat
+  time: midnight
+  difficulty: hard
+  gamerules:
+    doDaylightCycle: false
+    doMobSpawning: false
+    keepInventory: true
+    naturalRegeneration: false
+    randomTickSpeed: 0
+
+geometry:
+  - fill: { block: bedrock, from: [-12, -61, -12], to: [12, -61, 12] }
+  - setblock: { at: [-1, -60, 0], block: waxed_oxidized_cut_copper_stairs }
+  - setblock: { at: [1, -60, 0], block: waxed_oxidized_cut_copper_stairs }
+  - setblock: { at: [0, -60, -1], block: waxed_oxidized_cut_copper_stairs }
+  - setblock: { at: [0, -60, 1], block: waxed_oxidized_cut_copper_stairs }
+
+entities:
+  - type: skeleton
+    pos: [6.5, -60, 0.5]
+    nbt: '{NoAI:1b,PersistenceRequired:1b,HandItems:[{id:"minecraft:bow",count:1},{}]}'
+
+schedule:
+  - { afterTicks: 120, run: "gamerule naturalRegeneration true" }
+
+players:
+  - name: StairShelter
+    pos: [0.5, -60, 0.5]
+    health: 5
+    equipment: { chest: iron_chestplate }
+    inventory:
+      - { item: iron_sword, count: 1 }
+      - { item: iron_pickaxe, count: 1 }
+      - { item: cobblestone, count: 64 }
+      - { item: cooked_beef, count: 32 }
+
+params:
+  waitTicks: 800
+
+tick:
+  - "gamemode spectator @a[name=!StairShelter,gamemode=!spectator]"
+
+goal:
+  kind: all
+  timeout: 80
+  goals:
+    - { kind: blockAt, who: StairShelter, pos: [1, -60, 0], block: cobblestone }
+    - { kind: survive, who: StairShelter, seconds: 30 }
+    - { kind: health, who: StairShelter, health: 18 }
+    - { kind: completion, who: StairShelter }

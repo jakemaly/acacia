@@ -4,13 +4,14 @@ import { registryNameSchema } from "../registry-name.js";
 
 export const DROP_ITEM = "drop_item" as const;
 export const DROP_ITEM_DESCRIPTION =
-  "Drop carried items on the ground, or hand them to a nearby player by walking to them first and tossing at their feet. " +
+  "Drop carried items on the ground or into a disposal hole. " +
   "Each named item is tossed stack by stack and verified gone from the inventory. Worn armour and the off-hand are never " +
   "dropped, and the held item only with allow_equipped. With in_a_hole, dig a dry two-block-deep hole beside the bot " +
-  "(excavating a wall opening underground when needed), verify the items landed below pickup height, then plug the hole " +
-  "with a carried block other than the items dropped, and step back from it so a later collect_block does not walk straight into the pit. Cannot combine in_a_hole with to_player. " +
-  "To free inventory space, prefer depositing into a chest with use_container: dropped items despawn after five " +
-  "minutes, can be taken by anyone, and may be picked straight back up by this bot. Drop only when no container is in " +
+  "(excavating a wall opening underground when needed), verify the items landed below pickup height, then try to plug the hole " +
+  "with a carried block other than the items dropped and step back. Check holeClosure: the toss can succeed even if the hole stays open. " +
+  "To free inventory space, prefer depositing into a chest with use_container. When discarding clutter without a chest, " +
+  "use in_a_hole to prevent immediate pickup; a ground drop can be picked straight back up even if the toss succeeded. " +
+  "Dropped items despawn after five minutes and can be taken by anyone. Drop only when no container is in " +
   "reach, when carrying the items to one is not worth the trip, or when the items are genuinely rubbish. " +
   "Does not craft, fetch, or place containers.";
 
@@ -36,15 +37,6 @@ export const dropItemInputSchema = z
       .min(1)
       .max(12)
       .describe("Items to drop, in order."),
-    to_player: z
-      .string()
-      .min(1)
-      .max(32)
-      .optional()
-      .describe(
-        "Player to hand the items to. The bot walks within reach of them, faces them, and tosses. Omitted, the items are " +
-          "dropped where the bot already stands.",
-      ),
     allow_equipped: z
       .boolean()
       .default(false)
@@ -55,12 +47,8 @@ export const dropItemInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "Create a dry, enclosed disposal pit below pickup height beside the bot, digging a wall opening if needed, then toss into it. Afterwards the pit is plugged with a carried block other than the items dropped, and the bot steps back from it. Fails without tossing if adjacent terrain cannot safely contain the pit. Cannot be combined with to_player.",
+        "Create a dry, enclosed disposal pit below pickup height beside the bot, digging a wall opening if needed, then toss into it. Afterwards the bot tries to plug the pit with a carried block other than the items dropped and steps back; check holeClosure for failures. Fails without tossing if adjacent terrain cannot safely contain the pit.",
       ),
-  })
-  .refine((value) => !value.in_a_hole || value.to_player === undefined, {
-    message: "in_a_hole cannot be combined with to_player.",
-    path: ["in_a_hole"],
   });
 
 export interface DropRequestItem {
@@ -70,8 +58,7 @@ export interface DropRequestItem {
 
 export interface DropItemRequest {
   readonly items: readonly DropRequestItem[];
-  readonly destination:
-    { readonly kind: "ground" } | { readonly kind: "player"; readonly name: string } | { readonly kind: "hole" };
+  readonly destination: { readonly kind: "ground" } | { readonly kind: "hole" };
   readonly allowEquipped: boolean;
 }
 
@@ -79,11 +66,7 @@ export function parseDropItemRequest(input: unknown): DropItemRequest {
   const value = dropItemInputSchema.parse(input ?? {});
   return {
     items: value.items.map((item) => ({ itemName: item.item_name, count: item.count ?? null })),
-    destination: value.in_a_hole
-      ? { kind: "hole" }
-      : value.to_player
-        ? { kind: "player", name: value.to_player }
-        : { kind: "ground" },
+    destination: value.in_a_hole ? { kind: "hole" } : { kind: "ground" },
     allowEquipped: value.allow_equipped,
   };
 }
@@ -146,11 +129,6 @@ export const dropItemOutcomes = {
     `[DROP_REJECTED] Mineflayer could not toss ${item}: ${cause instanceof Error ? cause.message : String(cause)}`,
   notObserved: (item: string, remaining: number) =>
     `[DROP_NOT_OBSERVED] The inventory still holds ${item} x${remaining} after tossing.`,
-  playerNotFound: (name: string) =>
-    `[DROP_PLAYER_NOT_FOUND] No player named ${name} is loaded nearby; move closer or check the name.`,
-  playerUnreachable: (name: string, reason: string) =>
-    `[DROP_PLAYER_UNREACHABLE] Pathfinder could not reach ${name}: ${reason}.`,
-  playerLeft: (name: string) => `[DROP_PLAYER_LEFT] ${name} stopped being observed before the items were tossed.`,
   incomplete: (failed: number, total: number) =>
     `[DROP_INCOMPLETE] ${failed} of ${total} item${total === 1 ? "" : "s"} could not be dropped.`,
 } as const;

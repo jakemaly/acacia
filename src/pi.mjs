@@ -16,6 +16,17 @@ export const thinkingLevel = 'high';
 const maxContinuationsWithoutAction = 3;
 const continuePlaying = 'The server has not verified a dragon kill. Continue playing from the current world state.';
 
+/** A resumed world gets a new model context; saved transcripts stay available to the operator. */
+export function freshPrivateSession(directory) {
+  return SessionManager.create(directory, directory);
+}
+
+export function initialAgentPrompt(promptText, resumeSession, instruction) {
+  return resumeSession
+    ? `${promptText}\n\n${instruction || 'The world has resumed. Inspect the current status and pending actions before continuing.'}`
+    : promptText;
+}
+
 function mcpDisconnected(error) {
   return error instanceof McpConnectionClosedError || error.cause?.code === 'UND_ERR_SOCKET' ||
     (error instanceof McpError && error.code === -32603 && error.message.startsWith('MCP response stream failed:'));
@@ -73,17 +84,26 @@ export async function openai(agentDir) {
   return { runtime, model };
 }
 
-export async function play({ directory, socket, agentDir, signal, record, promptText, collectContext = false,
+export async function play({ directory, socket, remoteMcp, agentDir, signal, record, promptText, collectContext = false,
   inference = openai, lab, collectLabEvidence, onLabOutcome, onLabControllerStart, resumeSession, resumeSettings, instruction }) {
   const { runtime, model } = ['tool', 'idle'].includes(lab?.controller?.type) ? {} : await inference(agentDir);
-  const dispatcher = new Agent({ connect: { socketPath: socket } });
+  if (Boolean(socket) === Boolean(remoteMcp)) throw new Error('Select exactly one Minecraft MCP connection.');
+  if (remoteMcp) {
+    const target = new URL(remoteMcp.url);
+    if (target.protocol !== 'https:' && !(target.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname))) {
+      throw new Error('Remote Minecraft MCP requires HTTPS.');
+    }
+    if (!remoteMcp.token) throw new Error('Remote Minecraft MCP requires a connection token.');
+  }
+  const dispatcher = socket ? new Agent({ connect: { socketPath: socket } }) : undefined;
   let client;
   async function connectMcp() {
     client = new McpClient({ name: 'Pi Minecraft', version: '1.0.0', requestTimeoutMs: 180_000 });
     await client.connect(new StreamableHttpTransport({
-      url: 'http://127.0.0.1:25575/mcp',
+      url: remoteMcp?.url ?? 'http://127.0.0.1:25575/mcp',
+      ...(remoteMcp && { headers: { Authorization: `Bearer ${remoteMcp.token}` } }),
       fetch: (url, options) => fetch(url, {
-        ...options, dispatcher, signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+        ...options, ...(dispatcher && { dispatcher }), signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
       }),
     }));
   }
@@ -143,7 +163,8 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
             if (activatesFixture) await onLabControllerStart?.();
             return pending;
           })();
-        const result = tool.name === 'view_status' ? filterStatusPlayers(rawResult) : rawResult;
+        // Old settled actions can contain player lists too (for example sleep).
+        const result = filterStatusPlayers(rawResult);
         const response = result.structuredContent?.response;
         // Polling or retrieving an old result again does not make progress.
         const completed = response?.data?.output?.action ? response.data.actionId
@@ -238,13 +259,14 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     const resourceLoader = new DefaultResourceLoader({
       cwd: directory, agentDir, settingsManager, noExtensions: true, noSkills: true,
       noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: [],
-      systemPrompt: resumeSettings?.systemPrompt ?? client.instructions,
+      systemPrompt: client.instructions,
     });
     await resourceLoader.reload();
     ({ session } = await createAgentSession({
       cwd: directory, agentDir, model, modelRuntime: runtime, thinkingLevel, settingsManager, resourceLoader,
-      sessionManager: resumeSession ? SessionManager.open(resumeSession, directory, directory)
-        : SessionManager.create(directory, directory),
+      // Older transcripts can contain player names or chat. Resume the world
+      // with a fresh agent context rather than replaying those private records.
+      sessionManager: freshPrivateSession(directory),
       customTools: tools, noTools: 'all', tools: tools.map(tool => tool.name),
     }));
     // A wait and its successor must reach Mine AI in the order Pi emitted them.
@@ -287,9 +309,7 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     const monitoring = lab?.checks?.length ? monitorLab() : null;
     signal.addEventListener('abort', stop, { once: true });
     signal.throwIfAborted();
-    let prompt = resumeSession
-      ? instruction || 'Continue from the saved Minecraft conversation and the restored world state.'
-      : promptText;
+    let prompt = initialAgentPrompt(promptText, resumeSession, instruction);
     for (;;) {
       signal.throwIfAborted();
       lastReply = undefined;
@@ -335,6 +355,6 @@ export async function play({ directory, socket, agentDir, signal, record, prompt
     signal.removeEventListener('abort', stop);
     session?.dispose();
     await client?.close().catch(() => {});
-    await dispatcher.destroy();
+    await dispatcher?.destroy();
   }
 }

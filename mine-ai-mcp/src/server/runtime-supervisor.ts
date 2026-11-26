@@ -1,6 +1,7 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type ClientRequest, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { z } from "zod";
 import { writeIncidentArtifact, type IncidentReference, type IncidentRetention } from "../bot-data/incident-log.js";
 import {
@@ -22,6 +23,16 @@ const envelopeSchema = z.object({
   method: z.string().optional(),
   params: z.object({ name: z.string().optional() }).optional(),
 });
+const synchronousDiagnosticSchema = z.object({
+  id: z.number().int().nonnegative(),
+  state: z.enum(["entered", "returned"]),
+  operation: z.string(),
+  phase: z.string(),
+  at: z.number(),
+  omitted: z.number().int().nonnegative(),
+  stack: z.string().optional(),
+});
+type SynchronousDiagnostic = z.infer<typeof synchronousDiagnosticSchema>;
 interface PendingRequest {
   readonly response: ServerResponse;
   readonly upstream: ClientRequest;
@@ -87,6 +98,10 @@ export async function startMcpSupervisor(options: McpSupervisorOptions) {
   const pending = new Set<PendingRequest>();
   let activity: RuntimeActivity | null = null;
   let heartbeat: Extract<z.infer<typeof runtimeMessageSchema>, { kind: "heartbeat" }> | null = null;
+  let latestSynchronousDiagnostic: SynchronousDiagnostic | null = null;
+  let synchronousDiagnosticsAvailable = false;
+  let synchronousDiagnosticsIncomplete = false;
+  let activeSynchronousDiagnostics: SynchronousDiagnostic[] = [];
   const recorder = new IncidentRecorder(
     { instanceId: options.instanceId, source: options.source },
     (capture) =>
@@ -133,6 +148,12 @@ export async function startMcpSupervisor(options: McpSupervisorOptions) {
       activity,
       activityAgeMs: activity === null ? null : Date.now() - activity.observedAt,
       pending: [...pending].map(({ id, method, tool, path, httpMethod }) => ({ id, method, tool, path, httpMethod })),
+    });
+    if (code === "RUNTIME_UNRESPONSIVE") recorder.record("synchronous_diagnostic", {
+      available: synchronousDiagnosticsAvailable,
+      latest: latestSynchronousDiagnostic,
+      active: activeSynchronousDiagnostics,
+      incomplete: synchronousDiagnosticsIncomplete,
     });
     // Stop only the child we spawned. SIGKILL also covers an event loop that
     // cannot process SIGTERM; it never asks that loop to perform its own rescue.
@@ -243,8 +264,41 @@ export async function startMcpSupervisor(options: McpSupervisorOptions) {
   });
   child = spawn(options.executable, [...options.args], {
     windowsHide: true,
-    stdio: ["ignore", "inherit", "inherit", "ipc"],
+    stdio: ["ignore", "inherit", "inherit", "ipc", "pipe"],
+    env: { ...process.env, MINE_AI_DIAGNOSTIC_FD: "4" },
   });
+  const diagnostics = child.stdio[4];
+  if (diagnostics instanceof Readable) {
+    let buffer = "";
+    diagnostics.setEncoding("utf8");
+    diagnostics.on("error", () => { synchronousDiagnosticsIncomplete = true; });
+    diagnostics.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      if (buffer.length > 4096) { buffer = ""; synchronousDiagnosticsIncomplete = true; }
+      for (const line of lines) {
+        try {
+          const parsed = synchronousDiagnosticSchema.safeParse(JSON.parse(line));
+          if (!parsed.success) { synchronousDiagnosticsIncomplete = true; continue; }
+          const entry = parsed.data;
+          if (entry.omitted) { synchronousDiagnosticsIncomplete = true; activeSynchronousDiagnostics = []; }
+          if (entry.id === 0 && entry.operation === "diagnostic" && entry.phase === "channel_ready") {
+            synchronousDiagnosticsAvailable = true;
+            continue;
+          }
+          latestSynchronousDiagnostic = entry;
+          if (entry.state === "entered") activeSynchronousDiagnostics.push(entry);
+          else activeSynchronousDiagnostics = activeSynchronousDiagnostics.filter((active) => active.id !== entry.id);
+          // The channel is observational: malformed or missing returns must not grow it without bound.
+          if (activeSynchronousDiagnostics.length > 64) {
+            synchronousDiagnosticsIncomplete = true;
+            activeSynchronousDiagnostics = activeSynchronousDiagnostics.slice(-64);
+          }
+        } catch { synchronousDiagnosticsIncomplete = true; }
+      }
+    });
+  }
   child.on("message", (raw: unknown) => {
     const parsed = runtimeMessageSchema.safeParse(raw);
     if (!parsed.success || state.kind === "failed" || state.kind === "failing") return;

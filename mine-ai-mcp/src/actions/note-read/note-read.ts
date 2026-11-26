@@ -15,9 +15,9 @@ import {
 
 export const latestNotesQuery = defineSqlQuery({
   id: "latest-bot-notes",
-  produces: "The latest N notes saved by one bot in this world, newest first.",
-  parameterNames: ["botId", "n"] as const,
-  sql: "SELECT * FROM main.notes WHERE bot_id = ? ORDER BY note_id DESC LIMIT ?",
+  produces: "The latest N notes saved by one bot after the privacy boundary, newest first.",
+  parameterNames: ["botId", "afterNoteId", "n"] as const,
+  sql: "SELECT * FROM main.notes WHERE bot_id = ? AND note_id > ? ORDER BY note_id DESC LIMIT ?",
   parseRow: parseBotNote,
 });
 
@@ -32,9 +32,15 @@ export const latestNotesQuery = defineSqlQuery({
 export function createNoteReadAction(
   data: SqlBotData,
   botId: string,
+  options: { readonly hideExisting?: boolean } = {},
 ): OneShotAction<typeof NOTE_READ, NoteReadRequest, NoteReadResult> & {
   readonly queries: readonly SqlQueryCatalogEntry[];
 } {
+  // Old model-authored notes may have copied chat or player names. New notes
+  // remain usable for this runtime without deleting the operator's history.
+  const afterNoteId = options.hideExisting
+    ? Number(data.read("SELECT COALESCE(MAX(note_id), 0) AS last_id FROM notes WHERE bot_id = ?", botId)[0]?.last_id ?? 0)
+    : 0;
   return defineSqlAction({
     name: NOTE_READ,
     description: NOTE_READ_DESCRIPTION,
@@ -52,7 +58,7 @@ export function createNoteReadAction(
       context.signal?.throwIfAborted();
       return {
         status: "succeeded",
-        notes: readSqlQuery(data, latestNotesQuery.bind({ botId, n: request.n })),
+        notes: readSqlQuery(data, latestNotesQuery.bind({ botId, afterNoteId, n: request.n })),
         source: sqlActionSource([latestNotesQuery]),
       };
     },

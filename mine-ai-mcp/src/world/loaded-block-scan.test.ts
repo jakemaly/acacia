@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Bot } from "mineflayer";
 import { Vec3 } from "vec3";
-import { findLoadedBlockPositions, type LoadedBlockScan } from "./loaded-block-scan.js";
+import { findLoadedBlockPositions, summarizeLoadedBlocks, type LoadedBlockScan } from "./loaded-block-scan.js";
 
 interface TestSection {
   solidBlockCount: number;
@@ -203,4 +203,33 @@ test("sparse scans retain distant matches and observe single-value container rep
   section.get = ({ x, y, z }) => (x === 2 && y === 3 && z === 4 ? 7 : 1);
   assert.deepEqual(findLoadedBlockPositions(bot, request), [new Vec3(1602, -45, -1596)]);
   assert.deepEqual(findLoadedBlockPositions(bot, { ...request, stateIds: new Set() }), []);
+});
+
+test("summary counts all matches and preserves nearest-first distance ties across dense and sparse chunks", async () => {
+  const dense: TestSection = { solidBlockCount: 4096, data: { value: 7 }, get: () => 7 };
+  const sparse: TestSection = { solidBlockCount: 2, data: {}, palette: [1, 7],
+    get: ({ x, y, z }) => y === 0 && z === 0 && (x === 0 || x === 1) ? 7 : 1 };
+  const columns: TestColumn[] = [
+    { chunkX: -1, chunkZ: 0, column: { minY: 0, sections: [dense] } },
+    { chunkX: 0, chunkZ: 0, column: { minY: 0, sections: [sparse] } },
+    { chunkX: 1, chunkZ: 0, column: { minY: 0, sections: [dense] } },
+  ];
+  const result = await summarizeLoadedBlocks(scannerBot(columns), {
+    center: new Vec3(0, 0, 0), stateIds: new Set([7]), limit: 3,
+  });
+  assert.equal(result.count, 8194);
+  assert.deepEqual(result.positions.map(({ x, y, z }) => [x, y, z]), [[0, 0, 0], [-1, 0, 0], [1, 0, 0]]);
+});
+
+test("summary stops a large scan when its request is cancelled", async () => {
+  let reads = 0;
+  const section: TestSection = { solidBlockCount: 1, data: {}, get: () => { reads++; return 7; } };
+  const columns: TestColumn[] = Array.from({ length: 32 }, (_, chunkX) => ({ chunkX, chunkZ: 0,
+    column: { minY: 0, sections: [section] } }));
+  const controller = new AbortController();
+  setImmediate(() => controller.abort(new Error("cancelled scan")));
+  await assert.rejects(summarizeLoadedBlocks(scannerBot(columns), {
+    center: new Vec3(0, 0, 0), stateIds: new Set([7]), limit: 1,
+  }, controller.signal), /cancelled scan/);
+  assert.ok(reads < 32 * 4096, "cancellation must stop scanning the remaining chunks");
 });

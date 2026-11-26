@@ -11,6 +11,20 @@ function noteBot(username = "NoteBot", age: number | null = 24000) {
 
 const request = { note: "Bring a bucket", context: "Found lava while looking for iron." };
 
+test("agent note reads hide older potentially private notes while keeping new notes", async (t) => {
+  const data = temporaryBotData({ botId: "NoteBot", closeAfter: t });
+  const bot = noteBot();
+  const save = createNoteSaveAction(bot, data);
+  await save.execute({ note: "aycelol was watching", context: "old player information" }, {});
+  const read = createNoteReadAction(data, bot.username, { hideExisting: true });
+  assert.deepEqual((await read.execute({ n: 10 }, {})).notes, []);
+  await save.execute(request, {});
+  const result = await read.execute({ n: 10 }, {});
+  assert.equal(result.notes.length, 1);
+  assert.equal(result.notes[0]?.note, request.note);
+  assert.equal(data.read("SELECT * FROM notes").length, 2, "operator history remains intact");
+});
+
 test("notes persist across reopen, snapshot location and time, and read newest first without consumption", async (t) => {
   const storage = persistentBotData(t);
   {

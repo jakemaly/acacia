@@ -1,5 +1,6 @@
 import { channel } from "node:diagnostics_channel";
 import { randomUUID } from "node:crypto";
+import { synchronousDiagnostic } from "./synchronous-diagnostic.js";
 
 /** Matches navigation's 8 ms search slices, leaving room in a 50 ms physics tick. */
 export const EXECUTION_SLICE_MS = 8;
@@ -82,7 +83,7 @@ export class ExecutionScope implements Disposable {
     this.#phase = phase;
     this.#publish({ kind: "entered", reason: null });
     try {
-      return effect();
+      return synchronousDiagnostic(this.owner.operation, phase, effect);
     } finally {
       this.#phase = previous;
       this.#publish({ kind: "returned", reason: null }, phase);

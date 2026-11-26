@@ -67,12 +67,11 @@ test("records a drop moving from air into lava without claiming destruction or p
   assert.equal(sighting.position.y, 44.56);
   assert.equal(sighting.state, "no_longer_observed");
   assert.equal(sighting.collectedByBot, false);
-  assert.equal(sighting.collectedByOther, false);
   f.lifetime.abort();
   assert.deepEqual(f.bot.eventNames(), []);
 });
 
-test("a partial collection can leave a loaded remainder; other collectors are distinct", () => {
+test("a partial collection can leave a loaded remainder without exposing other collectors", () => {
   const f = fixture();
   const drop = f.item(7, { name: "magma_cream", count: 3 });
   const read = observeHuntDrops(f.bot, "magma_cream", f.lifetime.signal);
@@ -84,7 +83,7 @@ test("a partial collection can leave a loaded remainder; other collectors are di
   );
   f.bot.emit("playerCollect", { id: 2 } as Bot["entity"], drop.entity);
   delete f.bot.entities[7];
-  assert.equal(read()[0]!.collectedByOther, true);
+  assert.equal("collectedByOther" in read()[0]!, false);
   assert.equal(read()[0]!.firstSeen, "already_loaded");
   f.lifetime.abort();
 });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -30,4 +30,18 @@ test('death reflection retains analysis as data and discards gameplay changes', 
   });
   assert.deepEqual(result, expected);
   assert.throws(() => deathReview({ ...expected, category: 'rewrite_tools' }), /valid death review/);
+});
+
+test('death reflection can use evidence saved by a remote worker', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'minecraft-review-remote-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'reflection-evidence.json'), JSON.stringify({ actions: [{ id: 'remote-action' }] }));
+  let prompt;
+  await reflectDeath({ directory, death: { cause: 'test' }, signal: new AbortController().signal,
+    inference: async () => ({ model: {}, runtime: { completeSimple: async (_model, context) => {
+      prompt = context.messages[0].content;
+      return { stopReason: 'stop', content: [{ type: 'text', text: JSON.stringify({ category: 'uncertain', summary: 'Unknown.', evidence: [], uncertainty: 'Unknown.', reviewQuestion: 'What happened?' }) }] };
+    } } }),
+  });
+  assert.match(prompt, /remote-action/);
 });

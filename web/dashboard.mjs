@@ -22,6 +22,8 @@ let signature = '';
 let controlPending = false;
 let revision = 0;
 let labCatalog = null;
+let modalBatch = { state: 'idle', slots: [] };
+let selectedSlot = 0;
 
 const reviewCategory = {
   decision: 'Gameplay decision',
@@ -224,7 +226,8 @@ function renderInventory(items) {
 }
 
 function renderStatus() {
-  const active = ['starting', 'running', 'saving', 'reflecting'].includes(run.state);
+  const remote = $('run-compute').value === 'modal';
+  const active = remote ? ['running', 'stopping'].includes(modalBatch.state) : ['starting', 'running', 'saving', 'reflecting'].includes(run.state);
   const mode = $('run-mode');
   if (run.state && !mode.dataset.initialized) {
     mode.value = run.defaultMode;
@@ -235,8 +238,18 @@ function renderStatus() {
   $('world-seed').textContent = run.seed ?? 'Random on start';
   mode.hidden = active;
   mode.disabled = !run.state || active || controlPending;
+  $('modal-count').hidden = !remote;
+  $('modal-count').disabled = controlPending || modalBatch.state === 'stopping';
+  if (remote && modalBatch.state === 'running' && !$('modal-count').dataset.edited && modalBatch.desiredCount) {
+    $('modal-count').value = String(modalBatch.desiredCount);
+  }
+  $('modal-resize').hidden = !remote || modalBatch.state !== 'running';
+  $('modal-resize').disabled = controlPending;
+  $('start').hidden = remote && modalBatch.state === 'paused';
+  $('modal-resume').hidden = !remote || modalBatch.state !== 'paused';
+  $('modal-resume').disabled = controlPending;
   $('start').disabled = mode.disabled || (hardcore && run.hardcore && run.state === 'won');
-  $('checkpoint-control').hidden = active;
+  $('checkpoint-control').hidden = active || remote;
   $('collect-checkpoints').disabled = $('start').disabled;
   const checkpoints = run.checkpoints;
   const checkpointStatus = $('checkpoint-status');
@@ -244,12 +257,13 @@ function renderStatus() {
   checkpointStatus.textContent = checkpoints?.state === 'full' ? 'Checkpoint collection paused at the storage limit.'
     : checkpoints?.state === 'error' ? `Checkpoint capture failed. ${checkpoints.error}`
     : checkpoints ? `Checkpoints collected: ${checkpoints.captured}` : '';
-  $('stop').hidden = !active;
+  $('stop').hidden = !active && !(remote && modalBatch.state === 'paused');
   $('stop').disabled = run.state === 'saving' || controlPending;
   $('run-state').textContent = run.state === 'won' ? 'Dragon defeated' : run.id ? title(run.state) : 'No run';
   $('run-state').classList.toggle('ready', run.state === 'running' || run.state === 'won');
-  $('run-detail').textContent = run.detail ?? '';
-  $('run-detail').hidden = !run.detail;
+  const detailText = run.detail ?? (remote ? modalBatch.detail ?? modalBatch.budget?.reason : '') ?? '';
+  $('run-detail').textContent = detailText;
+  $('run-detail').hidden = !detailText;
   if (run.model) $('model-picker').textContent = modelLabel(run.model);
   $('current-task').textContent = run.spectator ?? '';
   $('current-task-panel').hidden = !run.spectator;
@@ -265,6 +279,7 @@ function renderStatus() {
     }
   } else {
     const text = run.state === 'starting' ? 'Starting the Minecraft world…'
+      : run.state === 'running' ? 'Live viewer is unavailable.'
       : run.state === 'reflecting' ? 'Reviewing the Hardcore death…'
       : run.id ? 'Run finished. Its transcript is available in Conversation and Runs.'
       : 'Start a run to open the live first-person world view.';
@@ -293,6 +308,28 @@ function renderStatus() {
   renderDecision(currentEvent?.decision ?? run.decision ?? currentCall?.args?.rationale);
   renderActionIcon(currentCall);
   renderHealth();
+}
+
+function renderModalSlots() {
+  const holder = $('modal-slots');
+  const slots = modalBatch.slots ?? [];
+  holder.hidden = $('run-compute').value !== 'modal' || !slots.length;
+  const cost = modalBatch.budget?.estimatedUsd;
+  $('modal-budget').hidden = holder.hidden || !Number.isFinite(cost);
+  $('modal-budget').textContent = Number.isFinite(cost) ? `Estimated Modal usage: $${cost.toFixed(2)} / $28 operating threshold` : '';
+  if (holder.hidden) return;
+  holder.innerHTML = slots.map(slot => {
+    const item = slot.run;
+    const health = isNumber(item?.player?.health) ? ` · ${Math.round(item.player.health)}/20 health` : '';
+    const objective = item?.decision?.objective ?? item?.decision?.text ?? '';
+    return `<button class="modal-slot" type="button" data-slot="${slot.index}" aria-pressed="${slot.index === selectedSlot}">World ${slot.index + 1} · ${esc(title(item?.state ?? 'starting'))}${health}<span>${esc(objective)}</span></button>`;
+  }).join('');
+  for (const button of holder.querySelectorAll('button')) button.onclick = () => {
+    selectedSlot = Number(button.dataset.slot);
+    revision++;
+    messages.clear(); before = null; signature = '';
+    renderModalSlots();
+  };
 }
 
 function traceMarkup(entries, live = []) {
@@ -358,7 +395,13 @@ async function loadConversation(id, cursor) {
 async function refresh() {
   const requestRevision = revision;
   try {
-    const status = await api('/api/run');
+    modalBatch = await api('/api/modal');
+    renderModalSlots();
+    const remote = $('run-compute').value === 'modal';
+    const slot = remote ? modalBatch.slots?.[selectedSlot]?.run : undefined;
+    const status = remote && !slot?.id ? { defaultMode: 'hardcore', state: 'idle', activity: [] }
+      : remote && !['running', 'stopping'].includes(modalBatch.state) ? { defaultMode: 'hardcore', ...slot }
+      : await api(`/api/run${remote ? `?modal=${encodeURIComponent(slot.id)}` : ''}`);
     if (revision !== requestRevision) return;
     if (status.id !== run.id) {
       messages = new Map();
@@ -386,6 +429,26 @@ async function refresh() {
   } finally {
     setTimeout(refresh, 1500);
   }
+}
+
+async function controlModal(action) {
+  revision++;
+  controlPending = true;
+  renderStatus();
+  try {
+    const options = { method: 'POST' };
+    if (action === 'start' || action === 'resize') {
+      options.headers = { 'content-type': 'application/json' };
+      options.body = JSON.stringify({ count: Number($('modal-count').value), ...(action === 'start' && { mode: $('run-mode').value }) });
+    }
+    modalBatch = await api(`/api/modal/${action}`, options);
+    if (action === 'start' || action === 'resize') delete $('modal-count').dataset.edited;
+    if (action === 'start') selectedSlot = 0;
+    messages.clear(); before = null; signature = '';
+    renderModalSlots();
+    showError();
+  } catch (error) { showError(error.message); }
+  finally { controlPending = false; renderStatus(); }
 }
 
 async function control(action) {
@@ -483,6 +546,7 @@ async function startLab(input) {
   $('run-checkpoint').disabled = true;
   try {
     await api('/api/lab/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    $('run-compute').value = 'local';
     $('lab-launch-status').textContent = '';
     selected = null;
     showTab('conversation');
@@ -561,36 +625,65 @@ async function showRun(saved) {
       ${saved.labOutcome ? `<pre class="trace-output lab-result-evidence">${esc(JSON.stringify(saved.labOutcome, null, 2))}</pre>` : ''}
       <button id="repeat-lab" type="button">Repeat</button>
     </section>` : '';
+  const artifacts = saved.modal ? `<section class="run-recording" aria-label="Run artifacts">
+      <div class="run-library-meta">Saved artifacts</div>
+      ${['running', 'starting', 'saving'].includes(saved.state) ? '' : `<a href="/api/modal/artifact?id=${encodeURIComponent(saved.id)}&kind=world">Download world</a>`}
+      <a href="/api/modal/artifact?id=${encodeURIComponent(saved.id)}&kind=server-log">Download Minecraft log</a>
+      <a href="/api/modal/artifact?id=${encodeURIComponent(saved.id)}&kind=bot-log">Download bot log</a>
+    </section>` : '';
   panel.innerHTML = `<h2 class="run-detail-heading">${esc(saved.lab?.fixtureName ?? (saved.lab ? 'Checkpoint replay' : 'Beat the Ender Dragon'))}</h2>
     <dl class="run-detail-facts"><dt>Status</dt><dd>${esc(title(saved.state))}</dd>
       <dt>Seed</dt><dd>${esc(saved.seed)}</dd><dt>Model</dt><dd>${esc(saved.model)}</dd>
       <dt>Reasoning</dt><dd>${esc(title(saved.thinkingLevel))}</dd></dl>
     <section class="run-recording" aria-label="First-person recording">
       <div class="run-library-meta">First-person recording</div>
+      <select id="recording-segment" aria-label="Recording segment" hidden></select>
       <p id="saved-recording-status" class="run-library-meta">Checking recording…</p>
       <video id="saved-recording" controls playsinline preload="metadata" hidden></video>
       <a id="download-recording" hidden>Download WebM</a>
     </section>
-    <p class="run-library-meta">${esc(saved.detail)}</p>${labFacts}${reviewMarkup}<button id="saved-more" class="load-more" hidden>Load older activity</button>
+    <p class="run-library-meta">${esc(saved.detail)}</p>${artifacts}${labFacts}${reviewMarkup}<button id="saved-more" class="load-more" hidden>Load older activity</button>
     <div id="saved-messages" class="run-detail-timeline"></div>`;
   if (saved.lab) $('repeat-lab').onclick = () => repeatLab(saved);
-  const recordingUrl = `/api/recording?id=${encodeURIComponent(saved.id)}`;
-  try {
-    const response = await fetch(recordingUrl, { method: 'HEAD' });
-    if (selected !== saved.id) return;
-    if (response.ok) {
-      $('saved-recording').src = recordingUrl;
-      $('saved-recording').hidden = false;
-      $('download-recording').href = recordingUrl;
-      $('download-recording').download = `${saved.id}.webm`;
-      $('download-recording').hidden = false;
-      $('saved-recording-status').hidden = true;
-    } else {
-      $('saved-recording-status').textContent = 'No playable recording is available for this run.';
-    }
-  } catch {
-    if (selected === saved.id) $('saved-recording-status').textContent = 'Could not load this recording.';
+  let segments = saved.modal?.recordingSegments ?? [];
+  let originalRecording = true;
+  if (saved.modal) {
+    try {
+      const available = await api(`/api/modal/artifacts?id=${encodeURIComponent(saved.id)}`);
+      if (selected !== saved.id) return;
+      segments = available.segments;
+      originalRecording = available.original;
+    } catch { /* The existing recording check reports unavailable storage below. */ }
   }
+  const segmentPicker = $('recording-segment');
+  if (segments.length) {
+    if (originalRecording) segmentPicker.add(new Option('Original recording', ''));
+    segments.forEach((segment, index) => segmentPicker.add(new Option(`Resumed recording ${index + 1}`, segment)));
+    segmentPicker.hidden = false;
+  }
+  async function showRecording(segment = '') {
+    const recordingUrl = `/api/recording?id=${encodeURIComponent(saved.id)}${segment ? `&segment=${encodeURIComponent(segment)}` : ''}`;
+    $('saved-recording').hidden = true;
+    $('download-recording').hidden = true;
+    $('saved-recording-status').hidden = false;
+    $('saved-recording-status').textContent = 'Checking recording…';
+    try {
+      const response = await fetch(recordingUrl, { method: 'HEAD' });
+      if (selected !== saved.id || segmentPicker.value !== segment) return;
+      if (response.ok) {
+        $('saved-recording').src = recordingUrl;
+        $('saved-recording').hidden = false;
+        $('download-recording').href = recordingUrl;
+        $('download-recording').download = `${saved.id}${segment ? `-${segment}` : ''}.webm`;
+        $('download-recording').hidden = false;
+        $('saved-recording-status').hidden = true;
+      } else $('saved-recording-status').textContent = 'No playable recording is available for this run.';
+    } catch {
+      if (selected === saved.id) $('saved-recording-status').textContent = 'Could not load this recording.';
+    }
+  }
+  segmentPicker.onchange = () => { void showRecording(segmentPicker.value); };
+  await showRecording(segmentPicker.value);
   const entries = [];
   async function load(cursor) {
     try {
@@ -612,8 +705,12 @@ $('theme-toggle').onclick = () => {
   setTheme(theme);
   try { localStorage.setItem('minecraft-agent-theme', theme); } catch {}
 };
-$('start').onclick = () => control('start');
-$('stop').onclick = () => control('stop');
+$('start').onclick = () => $('run-compute').value === 'modal' ? controlModal('start') : control('start');
+$('stop').onclick = () => $('run-compute').value === 'modal' ? controlModal('stop') : control('stop');
+$('modal-resume').onclick = () => controlModal('resume');
+$('modal-resize').onclick = () => controlModal('resize');
+$('modal-count').oninput = () => { $('modal-count').dataset.edited = 'true'; };
+$('run-compute').onchange = () => { revision++; run = {}; delete $('run-mode').dataset.initialized; messages.clear(); before = null; signature = ''; renderModalSlots(); renderStatus(); };
 $('run-mode').onchange = renderStatus;
 $('conversation-tab').onclick = () => showTab('conversation');
 $('runs-tab').onclick = () => showTab('runs');

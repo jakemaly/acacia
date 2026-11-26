@@ -1,7 +1,10 @@
 # Bot data query guide
 
-Use `query_bot_data` to inspect remembered world facts, durable events,
-and the connected Minecraft version through read-only SQLite queries.
+Use `query_bot_data` to inspect remembered world facts and the connected
+Minecraft version through read-only SQLite queries. Event, action-history and
+note tables are unavailable to model queries because old records can contain
+other players' names or chat. Use `read_recent_events` for filtered game events
+and `note_read` for notes from the current runtime.
 
 For storage locations, schema tables, and basic examples, see [Bot data](bot-data.md).
 This guide covers schema discovery, reusable action queries, and interpreting results.
@@ -156,6 +159,16 @@ runtime in a child process: its supervisor detects missed heartbeats, terminates
 the unresponsive runtime, and reports `RUNTIME_UNRESPONSIVE`. This is runtime
 failure handling, not a query timeout that leaves the same connection usable.
 A directly embedded runtime does not gain that process supervision.
+
+For a supervised runtime, an unresponsive incident also contains a
+`synchronous_diagnostic` record. It reports the last instrumented synchronous
+operation, its entry stack, and any operations still entered when the supervisor
+captured the incident. Navigation search slices and frontier chunk scans are
+instrumented. The stack is where the operation was entered, not a sampled stack
+from inside a frozen function. `available` means the private diagnostic channel
+reported ready; `incomplete` signals observed lost or malformed records. The
+channel is best-effort and nonblocking, so a last operation may be stale if the
+channel filled or execution stalled outside an instrumented operation.
 
 Keep queries focused. The implementation and limits are defined in
 [the query contract](../../src/actions/query-bot-data/contract.ts),

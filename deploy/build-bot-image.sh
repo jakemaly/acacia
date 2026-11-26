@@ -3,6 +3,18 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
+
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != '--ensure' ) ]]; then
+  printf 'Usage: %s [--ensure]\n' "$0" >&2
+  exit 2
+fi
+
+# Serialize updates from this checkout; --ensure rechecks after acquiring the lock.
+exec 9< "$repo_dir/deploy/build-bot-image.sh"
+flock -x 9
+if [[ "${1:-}" == '--ensure' ]] && docker image inspect minecraft-mine-ai:acacia-fork-compat >/dev/null 2>&1; then
+  exit 0
+fi
 commit="$(git rev-parse HEAD)"
 working_tree=clean
 if [[ -n "$(git status --porcelain --untracked-files=all -- mine-ai-mcp deploy/Dockerfile deploy/inside.mjs deploy/viewer.mjs deploy/recording.mjs deploy/browser-recording.mjs deploy/viewer.patch deploy/viewer-package.json deploy/viewer-package-lock.json)" ]]; then

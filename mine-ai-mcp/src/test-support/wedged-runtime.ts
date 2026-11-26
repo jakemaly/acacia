@@ -15,6 +15,9 @@ const timing = JSON.parse(process.argv[2] ?? "") as {
 };
 
 reportRuntimeLiveness();
+function spinForever(): never {
+  while (true) {}
+}
 process.once("disconnect", () => process.exit(0));
 const server = createServer(async (request, response) => {
   if (request.url === "/background") {
@@ -57,6 +60,11 @@ const server = createServer(async (request, response) => {
   }
   using execution = new ExecutionScope({ bot: "WatchdogTest", operation: "fault_injection", targetId: null });
   await execution.run(request.url ?? "unknown", async () => {
+    if (request.url === "/sync-hang") execution.runSync("deliberate_spin", () => spinForever());
+    if (request.url === "/after-sync-hang") {
+      execution.runSync("finished_before_spin", () => {});
+      spinForever();
+    }
     if (request.url === "/microtask") while (true) await Promise.resolve();
     while (true) {} // Deliberately bypasses cooperative checkpoints.
   });
